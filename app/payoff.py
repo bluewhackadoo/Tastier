@@ -200,22 +200,40 @@ def breakevens(spots: list[float], pl: list[float]) -> list[float]:
 
 
 def analysis(legs: list[Leg], spot: float) -> dict:
-    """Full payload for the frontend graph."""
+    """Full payload for the frontend graph.
+
+    For a multi-expiration position the primary "@ EXP" curve is the
+    NEAREST expiration: legs expiring then are at intrinsic while later-dated
+    legs still carry their remaining time value. This is the next real event
+    and the accurate near-term payoff — unlike an all-legs-intrinsic curve,
+    which would double-count the max profit of structures that actually
+    expire at different times. Later expirations are returned as extra
+    `curves` (the last being the fully-intrinsic terminal payoff). A
+    single-expiration position reduces to the classic intrinsic payoff.
+    """
     grid = spot_grid(spot, legs)
-    exp = pl_curve(legs, grid, at_expiration=True)
     t0 = pl_curve(legs, grid, at_expiration=False)
     cost = net_open_cost(legs)
     live_value = value_at(legs, spot, at_expiration=False)
-    # one curve per intermediate expiration (chronological); the final
-    # expiration is the plain expiration_pl curve
+
     dtes = sorted({round(l.dte_years * 365) for l in legs if l.strike is not None})
-    curves = [
-        {"dte_days": d, "pl": [round(v, 2) for v in pl_curve_at(legs, grid, d / 365.0)]}
-        for d in dtes[:-1]
-    ]
+    if dtes:
+        near = dtes[0]
+        exp = pl_curve_at(legs, grid, near / 365.0)
+        curves = [
+            {"dte_days": d,
+             "pl": [round(v, 2) for v in pl_curve_at(legs, grid, d / 365.0)]}
+            for d in dtes[1:]
+        ]
+        exp_dte = near
+    else:  # equity/futures only
+        exp = pl_curve(legs, grid, at_expiration=True)
+        curves = []
+        exp_dte = 0
+
     return {
         "curves": curves,
-        "exp_dte": dtes[-1] if dtes else 0,
+        "exp_dte": exp_dte,
         "spot": spot,
         "grid": [round(x, 4) for x in grid],
         "expiration_pl": [round(x, 2) for x in exp],

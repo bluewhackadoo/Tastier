@@ -166,27 +166,9 @@ const niceStep = raw => {
   return 10 * p;
 };
 
-// linear hex blend, t in [0,1]
-const _hx = (a, b, t) => {
-  const p = s => [1, 3, 5].map(i => parseInt(s.slice(i, i + 2), 16));
-  const A = p(a), B = p(b);
-  return "#" + A.map((v, i) =>
-    Math.round(v + (B[i] - v) * t).toString(16).padStart(2, "0")).join("");
-};
-
-// chronological P/L-surface shades. i is the surface's index (0 = nearest
-// DTE), n the total count; expiration (the last surface) keeps the base
-// green/red, and nearer-dated curves get progressively lighter shades so
-// stacked expiries read chronologically.
-function surfaceShade(i, n) {
-  const t = n <= 1 ? 0 : ((n - 1) - i) / (n - 1);  // 0 at expiration
-  return {
-    posFill: _hx("#1b4d3a", "#43a074", t),
-    negFill: _hx("#5c1e26", "#ab5460", t),
-    posLine: _hx("#3ddc97", "#9bebc7", t),
-    negLine: _hx("#e0455e", "#f4a0ab", t),
-  };
-}
+// line colors for later-dated expiration curves (nearest is the shaded
+// primary; these are drawn as lines above it, furthest last)
+const CURVE_COLORS = ["#b98bff", "#8ab4ff", "#e6a5d4", "#f0d264"];
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const mmmdd = iso => {
@@ -444,17 +426,15 @@ function chartOverlay(props, ana) {
   // keep tick value labels clear of the corner row labels (now inside the plot)
   const rowTicks = ticks.filter(t => x(t) > left + 88 && x(t) < right - 88);
 
-  // chronological curve labels pinned to the right edge, de-overlapped;
-  // colors track the per-surface green shades so labels match their areas
+  // right-edge series labels, de-overlapped; the nearest expiration is the
+  // shaded (green) primary, later expirations are lines, T+0 is orange
   const hasOpts = (ana.legs || []).some(l => l.strike != null);
-  const nSurf = (ana.curves || []).length + 1;
   const seriesLabels = [
     { v: interp(gridXs, ana.t0_pl, hi), color: "#f59e0b", txt: "T+0" },
     ...(ana.curves || []).map((c, j) => ({
       v: interp(gridXs, c.pl, hi),
-      color: surfaceShade(j, nSurf).posLine, txt: c.dte_days + "d" })),
-    ...(hasOpts ? [{ v: interp(gridXs, expA, hi),
-                     color: surfaceShade(nSurf - 1, nSurf).posLine,
+      color: CURVE_COLORS[j % CURVE_COLORS.length], txt: c.dte_days + "d" })),
+    ...(hasOpts ? [{ v: interp(gridXs, expA, hi), color: "#8fd8a8",
                      txt: (ana.exp_dte ?? "") + "d exp" }] : []),
   ].map(s => ({ ...s, yy: Math.min(Math.max(y(s.v), top + 12), bottom - 6) }))
    .sort((a, b) => a.yy - b.yy);
@@ -693,11 +673,7 @@ function Analysis({ ana, stale, sel }) {
     theta: (ana.theta || [])[i] ?? 0,
     expPos: Math.max(ana.expiration_pl[i], 0),
     expNeg: Math.min(ana.expiration_pl[i], 0),
-    ...Object.fromEntries((ana.curves || []).flatMap((c, j) => [
-      ["c" + j, c.pl[i]],
-      ["cPos" + j, Math.max(c.pl[i], 0)],
-      ["cNeg" + j, Math.min(c.pl[i], 0)],
-    ])),
+    ...Object.fromEntries((ana.curves || []).map((c, j) => ["c" + j, c.pl[i]])),
   })), [ana]);
   // symmetric Y domain so P/L zero sits exactly on the center price strip
   const yMax = useMemo(() => {
@@ -707,16 +683,6 @@ function Analysis({ ana, stale, sel }) {
       for (const v of c.pl) m = Math.max(m, Math.abs(v));
     return m * 1.2;
   }, [data]);
-  // chronological P/L surfaces: intermediate curves (nearest first) then
-  // the final expiration, each with its own green/red shade
-  const surfaces = useMemo(() => {
-    const list = [
-      ...(ana.curves || []).map((c, j) =>
-        ({ posKey: "cPos" + j, negKey: "cNeg" + j, label: c.dte_days + "d" })),
-      { posKey: "expPos", negKey: "expNeg", label: (ana.exp_dte ?? "") + "d exp" },
-    ];
-    return list.map((s, i) => ({ ...s, sh: surfaceShade(i, list.length) }));
-  }, [ana]);
 
   // x-axis zoom (wheel, centered on cursor) and pan (drag); dblclick resets
   const [view, setView] = useState(null);           // [lo, hi] or null = full
@@ -801,17 +767,16 @@ function Analysis({ ana, stale, sel }) {
                       domain=${view ?? ["dataMin", "dataMax"]} />
             <${YAxis} hide=${true} domain=${[-yMax, yMax]} />
             <${Tooltip} content=${p => html`<${ChartTip} ...${p} curves=${ana.curves} />`} />
-            ${[...surfaces].reverse().map(s => html`
-              <${React.Fragment} key=${s.posKey}>
-                <${Area} type="monotone" dataKey=${s.posKey} stroke=${s.sh.posLine}
-                         strokeWidth=${1.5} fill=${s.sh.posFill} fillOpacity=${0.5}
-                         baseValue=${0} dot=${false} activeDot=${false}
-                         isAnimationActive=${false} />
-                <${Area} type="monotone" dataKey=${s.negKey} stroke=${s.sh.negLine}
-                         strokeWidth=${1.5} fill=${s.sh.negFill} fillOpacity=${0.5}
-                         baseValue=${0} dot=${false} activeDot=${false}
-                         isAnimationActive=${false} />
-              <//>`)}
+            <${Area} type="monotone" dataKey="expPos" stroke="#3ddc97" strokeWidth=${1.5}
+                     fill="#1b4d3a" fillOpacity=${0.5} baseValue=${0}
+                     dot=${false} activeDot=${false} isAnimationActive=${false} />
+            <${Area} type="monotone" dataKey="expNeg" stroke="#e0455e" strokeWidth=${1.5}
+                     fill="#5c1e26" fillOpacity=${0.5} baseValue=${0}
+                     dot=${false} activeDot=${false} isAnimationActive=${false} />
+            ${(ana.curves || []).map((c, j) => html`
+              <${Line} key=${"c" + j} type="monotone" dataKey=${"c" + j}
+                       stroke=${CURVE_COLORS[j % CURVE_COLORS.length]} dot=${false}
+                       strokeWidth=${1.5} isAnimationActive=${false} name=${c.dte_days + "d"} />`)}
             <${Line} type="monotone" dataKey="t0" stroke="#f59e0b" dot=${false}
                      strokeWidth=${2} isAnimationActive=${false} name="t0" />
             <${Customized} component=${p => chartOverlay(p, ana)} />
