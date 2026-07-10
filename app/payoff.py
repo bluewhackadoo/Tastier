@@ -47,6 +47,24 @@ def bs_price(
     return strike * math.exp(-r * t_years) * norm_cdf(-d2) - spot * norm_cdf(-d1)
 
 
+def bs_delta(
+    spot: float,
+    strike: float,
+    t_years: float,
+    iv: float,
+    option_type: str,  # "C" or "P"
+    r: float = 0.0,
+) -> float:
+    """Black-Scholes delta. At/after expiration returns the step function."""
+    if t_years <= 0 or iv <= 0:
+        if option_type == "C":
+            return 1.0 if spot > strike else 0.0
+        return -1.0 if spot < strike else 0.0
+    sig_sqrt_t = iv * math.sqrt(t_years)
+    d1 = (math.log(spot / strike) + (r + 0.5 * iv * iv) * t_years) / sig_sqrt_t
+    return norm_cdf(d1) if option_type == "C" else norm_cdf(d1) - 1.0
+
+
 def bs_theta(
     spot: float,
     strike: float,

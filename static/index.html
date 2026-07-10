@@ -28,14 +28,36 @@
          height: calc(100vh - 49px); }
   #left { border-right: 1px solid var(--line); overflow-y: auto; }
   #right { overflow-y: auto; padding: 18px 22px; }
-  .group { border-bottom: 1px solid var(--line); cursor: pointer; padding: 12px 16px; }
+  .group { border-bottom: 1px solid var(--line); cursor: pointer; padding: 10px 14px; }
   .group:hover { background: var(--panel); }
   .group.sel { background: var(--panel2); border-left: 3px solid var(--accent); }
   .group .u { font-weight: 600; font-size: 15px; }
-  .group .spot { font: 12px var(--mono); color: var(--dim); float: right; }
-  .leg { display: flex; justify-content: space-between; font: 12px var(--mono);
-         color: var(--dim); padding: 1px 0; }
-  .leg .q.long { color: var(--up); } .leg .q.short { color: var(--down); }
+  .ghead { display: flex; justify-content: space-between; align-items: center;
+           margin-bottom: 6px; }
+  .px { font: 600 12px var(--mono); padding: 2px 8px; border-radius: 3px;
+        background: #414b5a; color: #fff; }
+  .px.up { background: #1f6f4e; } .px.dn { background: #b23b4b; }
+  .subexp { font: 10px var(--mono); color: var(--dim); letter-spacing: .08em;
+            text-transform: uppercase; margin: 7px 0 3px; }
+  .leg2 { padding: 2px 0; white-space: nowrap; }
+  .pill { display: inline-block; background: #262c37; border-radius: 2px;
+          padding: 1px 7px; margin-right: 3px; font: 11px var(--mono);
+          color: #cfd6e1; }
+  .pill.dim { color: var(--dim); background: #1d232d; }
+  .pill.pc { background: #333a47; }
+  .pill.qty { min-width: 26px; text-align: right; }
+  table.pos { width: 100%; border-collapse: collapse; margin-top: 14px;
+              font: 12px var(--mono); }
+  table.pos th { color: var(--dim); font-weight: 400; text-align: right;
+                 padding: 4px 8px; border-bottom: 1px solid var(--line);
+                 font-size: 11px; }
+  table.pos td { text-align: right; padding: 3px 8px;
+                 border-bottom: 1px solid #1a212b; }
+  table.pos th:first-child, table.pos td:first-child { text-align: left;
+                 white-space: nowrap; }
+  table.pos tr.tot td { border-top: 1px solid var(--line); border-bottom: none;
+                        font-weight: 600; }
+  .num.pos { color: var(--up); } .num.neg { color: var(--down); }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr));
            gap: 10px; margin-bottom: 16px; }
   .card { background: var(--panel); border: 1px solid var(--line);
@@ -93,6 +115,45 @@ const niceStep = raw => {
   return 10 * p;
 };
 
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const mmmdd = iso => {
+  if (!iso) return "";
+  const [, m, d] = iso.split("-");
+  return `${MONTHS[+m - 1]} ${+d}`;
+};
+const strk = v => v == null ? "" : String(+v);
+const dteDays = l => Math.round(l.dte_years * 365);
+
+// leg pill row shared by the left panel and the position table
+const LegPills = ({ l }) => l.strike == null
+  ? html`<span class="pill qty">${l.qty}</span><span class="pill">shares</span>`
+  : html`
+    <span class="pill qty">${l.qty}</span>
+    <span class="pill">${mmmdd(l.expiration)}</span>
+    <span class="pill dim">${dteDays(l)}d</span>
+    <span class="pill">${strk(l.strike)}</span>
+    <span class="pill pc">${l.option_type}</span>`;
+
+// legs sorted with equity first, then by expiration and strike, clustered
+// under a "Jul 17 · 7d" subheader per expiration
+function GroupLegs({ legs }) {
+  const equity = legs.filter(l => l.strike == null);
+  const opts = legs.filter(l => l.strike != null)
+    .sort((a, b) => a.expiration.localeCompare(b.expiration) || a.strike - b.strike);
+  const out = [];
+  equity.forEach(l => out.push(html`<div key=${l.symbol} class="leg2"><${LegPills} l=${l} /></div>`));
+  let lastExp = null;
+  for (const l of opts) {
+    if (l.expiration !== lastExp) {
+      lastExp = l.expiration;
+      out.push(html`<div key=${"h" + l.expiration} class="subexp">
+        ${mmmdd(l.expiration)} · ${dteDays(l)}d</div>`);
+    }
+    out.push(html`<div key=${l.symbol} class="leg2"><${LegPills} l=${l} /></div>`);
+  }
+  return out;
+}
+
 function App() {
   const [setup, setSetup] = useState(null);       // /api/setup/validate result
   const [account, setAccount] = useState(null);
@@ -130,7 +191,12 @@ function App() {
         ping = setInterval(() => ws.readyState === 1 && ws.send("ping"), 15000); };
       ws.onmessage = e => {
         const m = JSON.parse(e.data);
-        if (m.symbol) setQuotes(q => ({...q, [m.symbol]: {...q[m.symbol], ...m}}));
+        if (m.symbol) setQuotes(q => {
+          const prev = q[m.symbol], next = {...prev, ...m};
+          if (m.mid != null && prev?.mid != null && m.mid !== prev.mid)
+            next.dir = m.mid > prev.mid ? "up" : "dn";
+          return {...q, [m.symbol]: next};
+        });
       };
       ws.onclose = () => { setWsOn(false); clearInterval(ping);
         if (alive) setTimeout(connect, 1500); };
@@ -166,14 +232,11 @@ function App() {
       <div id="left">
         ${Object.entries(groups).map(([u, legs]) => html`
           <div key=${u} class="group ${sel===u?'sel':''}" onClick=${()=>setSel(u)}>
-            <span class="spot">${fmt(quotes[u]?.mid)}</span>
-            <div class="u">${u}</div>
-            ${legs.map(l => html`
-              <div key=${l.symbol} class="leg">
-                <span class="q ${l.qty>0?'long':'short'}">${l.qty>0?'+':''}${l.qty}</span>
-                <span>${l.strike ? `${fmt(l.strike,0)}${l.option_type} ${l.expiration}` : 'shares'}</span>
-                <span>${fmt(quotes[l.streamer_symbol]?.mid ?? l.mark_price)}</span>
-              </div>`)}
+            <div class="ghead">
+              <span class="u">${u}</span>
+              <span class="px ${quotes[u]?.dir || ''}">${fmt(quotes[u]?.mid)}</span>
+            </div>
+            <${GroupLegs} legs=${legs} />
           </div>`)}
         ${!Object.keys(groups).length && html`<div class="empty">No open positions</div>`}
       </div>
@@ -338,7 +401,47 @@ function Analysis({ ana, stale }) {
           <//>
         <//>
       </div>
+      ${ana.leg_stats ? html`<${PositionTable} stats=${ana.leg_stats} />` : null}
     </div>`;
+}
+
+function PositionTable({ stats: raw }) {
+  const stats = [...raw].sort((a, b) =>
+    (a.strike == null ? "" : a.expiration).localeCompare(b.strike == null ? "" : b.expiration)
+    || (a.strike ?? 0) - (b.strike ?? 0));
+  const num = (v, d=2) => html`<span class="num ${v>0?'pos':v<0?'neg':''}">${fmt(v,d)}</span>`;
+  const tot = k => stats.reduce((a, s) => a + s[k], 0);
+  return html`
+    <table class="pos">
+      <thead><tr>
+        <th>Leg</th><th>Trd Prc</th><th>Mrk</th><th>DTE</th><th>Δ</th><th>θ</th>
+        <th>IV</th><th>Cst</th><th>Ext</th><th>P/L Open</th>
+      </tr></thead>
+      <tbody>
+        ${stats.map(s => html`
+          <tr key=${s.symbol}>
+            <td><${LegPills} l=${{...s, dte_years: s.dte_days / 365}} /></td>
+            <td>${fmt(s.trd_prc)}</td>
+            <td>${fmt(s.mark)}</td>
+            <td>${s.strike != null ? s.dte_days + "d" : "—"}</td>
+            <td>${fmt(s.delta)}</td>
+            <td>${num(s.theta)}</td>
+            <td>${s.iv != null ? (s.iv * 100).toFixed(1) + "%" : "—"}</td>
+            <td>${fmt(s.cost)}</td>
+            <td>${fmt(s.ext)}</td>
+            <td>${num(s.pl_open)}</td>
+          </tr>`)}
+        <tr class="tot">
+          <td>Σ</td><td></td><td></td><td></td>
+          <td>${fmt(tot("delta"))}</td>
+          <td>${num(tot("theta"))}</td>
+          <td></td>
+          <td>${fmt(tot("cost"))}</td>
+          <td>${fmt(tot("ext"))}</td>
+          <td>${num(tot("pl_open"))}</td>
+        </tr>
+      </tbody>
+    </table>`;
 }
 
 function SetupHelp({ setup }) {

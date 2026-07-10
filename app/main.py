@@ -89,7 +89,42 @@ async def analysis(account_number: str, underlying: str) -> dict:
         ))
     result = payoff.analysis(legs, float(spot))
     result["legs"] = legs_raw
+    result["leg_stats"] = _leg_stats(legs_raw, float(spot))
     return result
+
+
+def _leg_stats(legs_raw: list[dict], spot: float) -> list[dict]:
+    """Per-leg detail rows for the position table (all position-sized)."""
+    out = []
+    for l in legs_raw:
+        live = relay.latest.get(l["streamer_symbol"], {})
+        mark = float(live.get("mid") or l["mark_price"])
+        qm = l["qty"] * l["multiplier"]
+        if l["strike"] is not None:
+            iv = float(live.get("iv", 0.0) or 0.20)
+            delta = payoff.bs_delta(spot, l["strike"], l["dte_years"], iv,
+                                    l["option_type"])
+            theta = payoff.bs_theta(spot, l["strike"], l["dte_years"], iv,
+                                    l["option_type"])
+            intrinsic = (max(spot - l["strike"], 0.0) if l["option_type"] == "C"
+                         else max(l["strike"] - spot, 0.0))
+        else:
+            iv, delta, theta, intrinsic = None, 1.0, 0.0, mark
+        r2 = lambda v: round(v, 2) or 0.0  # `or` normalizes -0.0
+        out.append({
+            "symbol": l["symbol"], "qty": l["qty"], "strike": l["strike"],
+            "option_type": l["option_type"], "expiration": l["expiration"],
+            "dte_days": round(l["dte_years"] * 365),
+            "trd_prc": l["open_price"], "mark": r2(mark),
+            "iv": iv,
+            "delta": r2(qm * delta),
+            "theta": r2(qm * theta),
+            # cash-flow signed like the tastytrade grid: credits positive
+            "cost": r2(-qm * l["open_price"]),
+            "ext": r2(-qm * (mark - intrinsic)),
+            "pl_open": r2(qm * (mark - l["open_price"])),
+        })
+    return out
 
 
 @app.websocket("/ws/quotes")
