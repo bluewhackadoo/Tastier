@@ -59,7 +59,8 @@ async def positions(account_number: str) -> dict:
     except Exception as exc:
         raise HTTPException(502, f"positions fetch failed: {exc}")
     _legs_cache[account_number] = legs
-    symbols = {l["streamer_symbol"] for l in legs} | {l["underlying"] for l in legs}
+    symbols = {l["streamer_symbol"] for l in legs} | {
+        l.get("underlying_streamer") or l["underlying"] for l in legs}
     await relay.ensure_running(symbols)
     return {"groups": group_by_underlying(legs)}
 
@@ -71,7 +72,8 @@ async def analysis(account_number: str, underlying: str) -> dict:
     if not legs_raw:
         raise HTTPException(404, "no cached legs; call /api/positions first")
 
-    q = relay.latest.get(underlying, {})
+    spot_symbol = legs_raw[0].get("underlying_streamer") or underlying
+    q = relay.latest.get(spot_symbol, {}) or relay.latest.get(underlying, {})
     spot = q.get("mid") or q.get("bid") or 0.0
     if not spot:
         spot = next((l["mark_price"] for l in legs_raw if l["strike"] is None), 0.0)
@@ -90,6 +92,15 @@ async def analysis(account_number: str, underlying: str) -> dict:
     result = payoff.analysis(legs, float(spot))
     result["legs"] = legs_raw
     result["leg_stats"] = _leg_stats(legs_raw, float(spot))
+    # day P/L for this underlying: mark move off prior close plus anything
+    # realized today on legs still open (fully-closed legs aren't visible
+    # on a positions-only read)
+    pl_day = 0.0
+    for l, s in zip(legs_raw, result["leg_stats"]):
+        base = l.get("close_price") or l["open_price"]
+        pl_day += l["qty"] * l["multiplier"] * (s["mark"] - base)
+        pl_day += l.get("realized_day", 0.0)
+    result["pl_day"] = round(pl_day, 2) or 0.0
     return result
 
 

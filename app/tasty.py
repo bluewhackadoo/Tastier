@@ -13,7 +13,7 @@ from decimal import Decimal
 from typing import Any
 
 from tastytrade import Account, Session
-from tastytrade.instruments import Option
+from tastytrade.instruments import Future, FutureOption, Option
 
 from .config import settings
 
@@ -59,12 +59,28 @@ async def fetch_positions(account_number: str) -> list[dict]:
     option_symbols = [
         p.symbol for p in positions if p.instrument_type.value == "Equity Option"
     ]
-    option_map: dict[str, Option] = {}
+    fut_opt_symbols = [
+        p.symbol for p in positions if p.instrument_type.value == "Future Option"
+    ]
+    option_map: dict[str, Option | FutureOption] = {}
     if option_symbols:
         # Option.get fetches a single symbol per call in this SDK version;
         # no batch endpoint exists, so fan out concurrently.
         opts = await asyncio.gather(*(Option.get(session, s) for s in option_symbols))
         option_map = {o.symbol: o for o in opts}
+    if fut_opt_symbols:
+        fopts = await asyncio.gather(
+            *(FutureOption.get(session, s) for s in fut_opt_symbols)
+        )
+        option_map.update({o.symbol: o for o in fopts})
+
+    # futures contracts need their DXLink streamer symbol for spot quotes:
+    # the contract legs themselves, plus the underlying of futures options
+    contracts = {p.symbol for p in positions if p.instrument_type.value == "Future"}
+    contracts |= {o.underlying_symbol for o in option_map.values()
+                  if isinstance(o, FutureOption)}
+    fut_streamer: dict[str, str] = dict(await asyncio.gather(
+        *(_future_streamer(session, c) for c in contracts)))
 
     today = dt.date.today()
     out: list[dict] = []
@@ -78,12 +94,18 @@ async def fetch_positions(account_number: str) -> list[dict]:
             "multiplier": _f(p.multiplier) or 1.0,
             "open_price": _f(p.average_open_price),
             "mark_price": _f(p.mark_price),
+            "close_price": _f(p.close_price),          # prior daily close
+            "realized_day": _f(p.realized_day_gain),   # $ realized today
             "strike": None,
             "option_type": None,
             "expiration": None,
             "dte_years": 0.0,
             "streamer_symbol": p.underlying_symbol,  # default: equity quote
+            "underlying_streamer": p.underlying_symbol,  # spot quote symbol
         }
+        if p.instrument_type.value == "Future":
+            ss = fut_streamer.get(p.symbol, p.symbol)
+            leg.update(streamer_symbol=ss, underlying_streamer=ss)
         opt = option_map.get(p.symbol)
         if opt is not None:
             dte_days = max((opt.expiration_date - today).days, 0)
@@ -94,8 +116,20 @@ async def fetch_positions(account_number: str) -> list[dict]:
                 dte_years=dte_days / 365.0,
                 streamer_symbol=opt.streamer_symbol,
             )
+            if isinstance(opt, FutureOption):
+                leg["underlying_streamer"] = fut_streamer.get(
+                    opt.underlying_symbol, opt.underlying_symbol)
         out.append(leg)
     return out
+
+
+async def _future_streamer(session: Session, contract: str) -> tuple[str, str]:
+    """Resolve a futures contract to its DXLink streamer symbol."""
+    try:
+        fut = await Future.get(session, contract)
+        return contract, fut.streamer_symbol
+    except Exception:
+        return contract, contract
 
 
 def group_by_underlying(legs: list[dict]) -> dict[str, list[dict]]:

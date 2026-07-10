@@ -63,6 +63,12 @@
   table.pos tr.grp td { background: #1a212c; font-weight: 600; color: #dfe6ef;
                         padding-top: 5px; }
   .num.pos { color: var(--up); } .num.neg { color: var(--down); }
+  table.summary { border-collapse: collapse; margin-bottom: 12px; }
+  table.summary th { color: var(--dim); font: 10px var(--mono); font-weight: 400;
+                     text-transform: uppercase; letter-spacing: .06em;
+                     text-align: right; padding: 2px 16px 2px 0; }
+  table.summary td { font: 600 13px var(--mono); text-align: right;
+                     padding: 1px 16px 6px 0; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr));
            gap: 10px; margin-bottom: 16px; }
   .card { background: var(--panel); border: 1px solid var(--line);
@@ -250,7 +256,8 @@ function App() {
         if (!alive) return;
         setGroups(d.groups);
         const keys = Object.keys(d.groups);
-        if (keys.length) setSel(s => s ?? keys[0]);
+        const saved = localStorage.getItem("tastier.sel");
+        if (keys.length) setSel(s => s ?? (saved && d.groups[saved] ? saved : keys[0]));
       })
       .catch(() => { if (alive) setTimeout(load, 3000); });
     load();
@@ -312,18 +319,22 @@ function App() {
     </header>
     <main>
       <div id="left">
-        ${Object.entries(groups).map(([u, legs]) => html`
-          <div key=${u} class="group ${sel===u?'sel':''}" onClick=${()=>setSel(u)}>
+        ${Object.entries(groups).map(([u, legs]) => {
+          const q = quotes[u]?.mid != null ? quotes[u]
+                  : quotes[legs[0]?.underlying_streamer] || {};
+          return html`
+          <div key=${u} class="group ${sel===u?'sel':''}"
+               onClick=${() => { setSel(u); localStorage.setItem("tastier.sel", u); }}>
             <div class="ghead">
               <span class="u">${u}</span>
-              <span class="px ${quotes[u]?.dir || ''}">${fmt(quotes[u]?.mid)}</span>
+              <span class="px ${q.dir || ''}">${fmt(q.mid)}</span>
             </div>
             <${GroupLegs} legs=${legs} />
-          </div>`)}
+          </div>`;})}
         ${!Object.keys(groups).length && html`<div class="empty">No open positions</div>`}
       </div>
       <div id="right">
-        ${ana ? html`<${Analysis} ana=${ana} stale=${stale} />`
+        ${ana ? html`<${Analysis} ana=${ana} stale=${stale} sel=${sel} />`
               : html`<div class="empty">Select a position</div>`}
       </div>
     </main>`;
@@ -340,7 +351,7 @@ function chartOverlay(props, ana) {
   const font = "Consolas, monospace";
 
   const gridXs = ana.grid, expA = ana.expiration_pl, thA = ana.theta || [];
-  const lo = gridXs[0], hi = gridXs[gridXs.length - 1];
+  const [lo, hi] = x.domain();  // reflects the current zoom window
   const step = niceStep((hi - lo) / Math.max(4, Math.floor(width / 60)));
   const ticks = [];
   for (let t = Math.ceil(lo / step) * step; t <= hi + 1e-9; t += step)
@@ -350,7 +361,7 @@ function chartOverlay(props, ana) {
 
   // lot flags: long above the strip, short below; stagger when crowded
   const FW = 40, FH = 18, GAP = 9;
-  const flags = (ana.legs || []).filter(l => l.strike != null)
+  const flags = (ana.legs || []).filter(l => l.strike != null && l.strike >= lo && l.strike <= hi)
     .map(l => ({ xx: x(l.strike), up: l.qty > 0, label: `${l.qty}${l.option_type}` }))
     .sort((a, b) => a.xx - b.xx);
   const lastAt = { up: [], dn: [] };     // last x per stagger level, per side
@@ -372,11 +383,12 @@ function chartOverlay(props, ana) {
         ${fmtK(interp(gridXs, expA, t))}</text>`)}
 
     <!-- vertical guides (drawn first so the strip covers them) -->
-    ${ana.breakevens.map(b => html`
+    ${ana.breakevens.filter(b => b >= lo && b <= hi).map(b => html`
       <line key=${"bl" + b} x1=${x(b)} x2=${x(b)} y1=${top} y2=${bottom}
             stroke="#f5b94e" stroke-dasharray="4 4" />`)}
-    <line x1=${x(ana.spot)} x2=${x(ana.spot)} y1=${top} y2=${bottom}
-          stroke="#7aa5ff" stroke-width="1.5" />
+    ${ana.spot >= lo && ana.spot <= hi ? html`
+      <line x1=${x(ana.spot)} x2=${x(ana.spot)} y1=${top} y2=${bottom}
+            stroke="#7aa5ff" stroke-width="1.5" />` : null}
 
     <!-- center price strip -->
     <rect x=${left} y=${y0 - HALF} width=${width} height=${HALF * 2} fill="#10151d"
@@ -386,10 +398,11 @@ function chartOverlay(props, ana) {
     ${ticks.filter(t => Math.abs(x(t) - x(ana.spot)) > 18).map(t => html`
       <text key=${"p" + t} x=${x(t)} y=${y0 + 4} text-anchor="middle" font-size="11"
             font-family=${font} fill="#8b97a8">${fmt(t, step < 1 ? 2 : 0)}</text>`)}
-    <circle cx=${x(ana.spot)} cy=${y0} r=${3.5} fill="#dfe6ef" stroke="#0e1116" />
+    ${ana.spot >= lo && ana.spot <= hi ? html`
+      <circle cx=${x(ana.spot)} cy=${y0} r=${3.5} fill="#dfe6ef" stroke="#0e1116" />` : null}
 
     <!-- breakeven tags on the strip -->
-    ${ana.breakevens.map(b => html`
+    ${ana.breakevens.filter(b => b >= lo && b <= hi).map(b => html`
       <g key=${"b" + b}>
         <rect x=${x(b) - 24} y=${y0 - HALF - 16} width=${48} height=${14} rx=${3}
               fill="#2b2413" stroke="#f5b94e" stroke-width="0.5" />
@@ -438,7 +451,7 @@ function ChartTip({ active, payload }) {
     </div>`;
 }
 
-function Analysis({ ana, stale }) {
+function Analysis({ ana, stale, sel }) {
   const data = useMemo(() => ana.grid.map((s, i) => ({
     spot: s, exp: ana.expiration_pl[i], t0: ana.t0_pl[i],
     theta: (ana.theta || [])[i] ?? 0,
@@ -451,25 +464,86 @@ function Analysis({ ana, stale }) {
     for (const d of data) m = Math.max(m, Math.abs(d.exp), Math.abs(d.t0));
     return m * 1.2;
   }, [data]);
+
+  // x-axis zoom (wheel, centered on cursor) and pan (drag); dblclick resets
+  const [view, setView] = useState(null);           // [lo, hi] or null = full
+  const chartRef = useRef(null);
+  const viewRef = useRef(null); viewRef.current = view;
+  const fullRef = useRef([0, 1]);
+  fullRef.current = [ana.grid[0], ana.grid[ana.grid.length - 1]];
+  useEffect(() => setView(null), [sel]);
+  useEffect(() => {
+    const el = chartRef.current;
+    if (!el) return;
+    const PAD = 12 + 62;  // #chart padding + chart margin
+    const clamp = (lo, hi) => {
+      const [flo, fhi] = fullRef.current, span = hi - lo;
+      if (lo < flo) { lo = flo; hi = flo + span; }
+      if (hi > fhi) { hi = fhi; lo = fhi - span; }
+      return (hi - lo) >= (fhi - flo) - 1e-9 ? null : [Math.max(flo, lo), Math.min(fhi, hi)];
+    };
+    const onWheel = e => {
+      e.preventDefault();
+      const [flo, fhi] = fullRef.current;
+      const [lo, hi] = viewRef.current || [flo, fhi];
+      const r = el.getBoundingClientRect();
+      const frac = Math.min(1, Math.max(0, (e.clientX - r.left - PAD) / (r.width - 2 * PAD)));
+      const p = lo + frac * (hi - lo);
+      const f = e.deltaY > 0 ? 1.25 : 0.8;
+      let nlo = p - (p - lo) * f, nhi = p + (hi - p) * f;
+      const minSpan = (fhi - flo) * 0.04;
+      if (nhi - nlo < minSpan) { const c = (nlo + nhi) / 2; nlo = c - minSpan / 2; nhi = c + minSpan / 2; }
+      setView(clamp(nlo, nhi));
+    };
+    let drag = null;
+    const down = e => { if (e.button !== 0) return;
+      drag = { x: e.clientX, view: viewRef.current || fullRef.current.slice() };
+      el.style.cursor = "grabbing"; e.preventDefault(); };
+    const move = e => {
+      if (!drag) return;
+      const r = el.getBoundingClientRect();
+      const [lo, hi] = drag.view;
+      const dP = (e.clientX - drag.x) / (r.width - 2 * PAD) * (hi - lo);
+      setView(clamp(lo - dP, hi - dP));
+    };
+    const up = () => { drag = null; el.style.cursor = ""; };
+    const dbl = () => setView(null);
+    el.addEventListener("wheel", onWheel, { passive: false });
+    el.addEventListener("mousedown", down);
+    el.addEventListener("dblclick", dbl);
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("mousedown", down);
+      el.removeEventListener("dblclick", dbl);
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+  }, []);
+
+  const pct = ana.net_open_cost ? ana.live_pl / Math.abs(ana.net_open_cost) * 100 : null;
+  const sv = (v, txt) => html`<span class="num ${v>0?'pos':v<0?'neg':''}">${txt}</span>`;
   return html`
     <div>
-      <div class="cards">
-        <div class="card"><div class="k">Live P/L</div>
-          <div class="v ${ana.live_pl>=0?'pos':'neg'}">${money(ana.live_pl)}</div></div>
-        <div class="card"><div class="k">Spot ${stale?html`<span class="stale">stale</span>`:''}</div>
-          <div class="v">${fmt(ana.spot)}</div></div>
-        <div class="card"><div class="k">Max profit</div>
-          <div class="v pos">${money(ana.max_profit)}</div></div>
-        <div class="card"><div class="k">Max loss</div>
-          <div class="v neg">${money(ana.max_loss)}</div></div>
-        <div class="card"><div class="k">Breakevens</div>
-          <div class="v" style=${{fontSize:'14px'}}>${ana.breakevens.map(b=>fmt(b)).join(" / ")||"—"}</div></div>
-      </div>
-      <div id="chart">
+      <table class="summary"><thead><tr>
+        <th>Live P/L</th><th>P/L Opn%</th><th>P/L Day</th>
+        <th>Spot</th><th>Max Profit</th><th>Max Loss</th><th>Breakevens</th>
+      </tr></thead><tbody><tr>
+        <td>${sv(ana.live_pl, money(ana.live_pl))}</td>
+        <td>${pct == null ? "—" : sv(pct, fmt(pct, 1) + "%")}</td>
+        <td>${ana.pl_day == null ? "—" : sv(ana.pl_day, money(ana.pl_day))}</td>
+        <td>${fmt(ana.spot)}${stale ? html`<span class="stale">stale</span>` : ''}</td>
+        <td>${sv(1, money(ana.max_profit))}</td>
+        <td>${sv(-1, money(ana.max_loss))}</td>
+        <td>${ana.breakevens.map(b => fmt(b)).join(" / ") || "—"}</td>
+      </tr></tbody></table>
+      <div id="chart" ref=${chartRef}>
         <${ResponsiveContainer} width="100%" height=${480}>
           <${ComposedChart} data=${data} margin=${{top:26,right:62,bottom:26,left:62}}>
             <${XAxis} dataKey="spot" hide=${true} type="number"
-                      domain=${["dataMin","dataMax"]} />
+                      allowDataOverflow=${!!view}
+                      domain=${view ?? ["dataMin", "dataMax"]} />
             <${YAxis} hide=${true} domain=${[-yMax, yMax]} />
             <${Tooltip} content=${ChartTip} />
             <${Area} type="monotone" dataKey="expPos" stroke="#3ddc97" strokeWidth=${1.5}
