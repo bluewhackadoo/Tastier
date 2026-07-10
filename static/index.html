@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tasty Live Analysis</title>
+<title>Tastier Live Analysis</title>
 <style>
   :root {
     --bg: #0e1116; --panel: #161b23; --panel2: #1d242f;
@@ -70,6 +70,12 @@
            border-radius: 8px; padding: 12px; }
   .empty { color: var(--dim); padding: 60px; text-align: center; }
   .stale { color: var(--warn); font: 11px var(--mono); margin-left: 8px; }
+  .acct { color: var(--dim); font: 12px var(--mono); cursor: default;
+          letter-spacing: .04em; }
+  .acct .acct-mask { display: inline; }
+  .acct .acct-full { display: none; }
+  .acct:hover .acct-mask { display: none; }
+  .acct:hover .acct-full { display: inline; }
   button.reload { background: none; border: 1px solid var(--line); color: var(--dim);
            border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
   button.reload:hover { color: var(--text); border-color: var(--dim); }
@@ -223,9 +229,12 @@ function App() {
 
   return html`
     <header>
-      <h1>TASTY LIVE ANALYSIS</h1>
+      <h1>TASTIER LIVE ANALYSIS</h1>
       <span class="env ${setup.env==='live'?'live':''}">${setup.env.toUpperCase()}</span>
-      <span style=${{color:'var(--dim)',fontSize:'12px'}}>acct ${account}</span>
+      <span class="acct" title="hover to reveal">
+        <span class="acct-mask">acct ${'•'.repeat(Math.max(0,(account||'').length))}</span>
+        <span class="acct-full">acct ${account}</span>
+      </span>
       <span class="conn ${wsOn?'on':''}"><span class="dot"></span>${wsOn?'stream live':'stream down'}</span>
     </header>
     <main>
@@ -297,7 +306,8 @@ function chartOverlay(props, ana) {
           stroke="#7aa5ff" stroke-width="1.5" />
 
     <!-- center price strip -->
-    <rect x=${left} y=${y0 - HALF} width=${width} height=${HALF * 2} fill="#10151d" />
+    <rect x=${left} y=${y0 - HALF} width=${width} height=${HALF * 2} fill="#10151d"
+          fill-opacity="0.15" />
     <line x1=${left} x2=${right} y1=${y0 - HALF} y2=${y0 - HALF} stroke="#2a3341" />
     <line x1=${left} x2=${right} y1=${y0 + HALF} y2=${y0 + HALF} stroke="#2a3341" />
     ${ticks.filter(t => Math.abs(x(t) - x(ana.spot)) > 18).map(t => html`

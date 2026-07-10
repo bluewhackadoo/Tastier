@@ -12,7 +12,7 @@ from .config import settings
 from .streamer import relay
 from .tasty import fetch_positions, group_by_underlying, list_accounts
 
-app = FastAPI(title="Tasty Live Analysis", docs_url=None, redoc_url=None)
+app = FastAPI(title="Tastier Live Analysis", docs_url=None, redoc_url=None)
 STATIC = Path(__file__).resolve().parent.parent / "static"
 
 # in-memory cache of last-fetched legs per account (source of truth = tasty)
