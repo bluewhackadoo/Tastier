@@ -7,6 +7,7 @@ giving defense in depth.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from decimal import Decimal
 from typing import Any
@@ -60,7 +61,9 @@ async def fetch_positions(account_number: str) -> list[dict]:
     ]
     option_map: dict[str, Option] = {}
     if option_symbols:
-        opts = await Option.get(session, option_symbols)
+        # Option.get fetches a single symbol per call in this SDK version;
+        # no batch endpoint exists, so fan out concurrently.
+        opts = await asyncio.gather(*(Option.get(session, s) for s in option_symbols))
         option_map = {o.symbol: o for o in opts}
 
     today = dt.date.today()
