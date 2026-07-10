@@ -39,13 +39,16 @@
   .px.up { background: #1f6f4e; } .px.dn { background: #b23b4b; }
   .subexp { font: 10px var(--mono); color: var(--dim); letter-spacing: .08em;
             text-transform: uppercase; margin: 7px 0 3px; }
-  .leg2 { padding: 2px 0; white-space: nowrap; }
-  .pill { display: inline-block; background: #262c37; border-radius: 2px;
-          padding: 1px 7px; margin-right: 3px; font: 11px var(--mono);
-          color: #cfd6e1; }
+  .leg2 { display: grid; grid-template-columns: 30px 56px 34px 52px 20px;
+          gap: 3px; padding: 2px 0; }
+  .pill { display: block; background: #262c37; border-radius: 2px;
+          padding: 1px 6px; font: 11px var(--mono); color: #cfd6e1;
+          text-align: center; }
   .pill.dim { color: var(--dim); background: #1d232d; }
   .pill.pc { background: #333a47; }
-  .pill.qty { min-width: 26px; text-align: right; }
+  .pill.qty { text-align: right; }
+  .pill.strike { text-align: right; }
+  .pill.shares { grid-column: 2 / 6; text-align: left; }
   table.pos { width: 100%; border-collapse: collapse; margin-top: 14px;
               font: 12px var(--mono); }
   table.pos th { color: var(--dim); font-weight: 400; text-align: right;
@@ -57,6 +60,8 @@
                  white-space: nowrap; }
   table.pos tr.tot td { border-top: 1px solid var(--line); border-bottom: none;
                         font-weight: 600; }
+  table.pos tr.grp td { background: #1a212c; font-weight: 600; color: #dfe6ef;
+                        padding-top: 5px; }
   .num.pos { color: var(--up); } .num.neg { color: var(--down); }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr));
            gap: 10px; margin-bottom: 16px; }
@@ -128,36 +133,76 @@ const mmmdd = iso => {
   return `${MONTHS[+m - 1]} ${+d}`;
 };
 const strk = v => v == null ? "" : String(+v);
-const dteDays = l => Math.round(l.dte_years * 365);
+const dteDays = l => l.dte_days ?? Math.round(l.dte_years * 365);
 
-// leg pill row shared by the left panel and the position table
+// leg pill row shared by the left panel and the position table;
+// fixed grid columns keep every row vertically aligned
 const LegPills = ({ l }) => l.strike == null
-  ? html`<span class="pill qty">${l.qty}</span><span class="pill">shares</span>`
-  : html`
-    <span class="pill qty">${l.qty}</span>
-    <span class="pill">${mmmdd(l.expiration)}</span>
-    <span class="pill dim">${dteDays(l)}d</span>
-    <span class="pill">${strk(l.strike)}</span>
-    <span class="pill pc">${l.option_type}</span>`;
+  ? html`<div class="leg2">
+      <span class="pill qty">${l.qty}</span>
+      <span class="pill shares">${l.symbol?.includes("/") ? "futures" : "shares"}</span>
+    </div>`
+  : html`<div class="leg2">
+      <span class="pill qty">${l.qty}</span>
+      <span class="pill">${mmmdd(l.expiration)}</span>
+      <span class="pill dim">${dteDays(l)}d</span>
+      <span class="pill strike">${strk(l.strike)}</span>
+      <span class="pill pc">${l.option_type}</span>
+    </div>`;
 
-// legs sorted with equity first, then by expiration and strike, clustered
-// under a "Jul 17 · 7d" subheader per expiration
-function GroupLegs({ legs }) {
-  const equity = legs.filter(l => l.strike == null);
-  const opts = legs.filter(l => l.strike != null)
-    .sort((a, b) => a.expiration.localeCompare(b.expiration) || a.strike - b.strike);
-  const out = [];
-  equity.forEach(l => out.push(html`<div key=${l.symbol} class="leg2"><${LegPills} l=${l} /></div>`));
-  let lastExp = null;
-  for (const l of opts) {
-    if (l.expiration !== lastExp) {
-      lastExp = l.expiration;
-      out.push(html`<div key=${"h" + l.expiration} class="subexp">
-        ${mmmdd(l.expiration)} · ${dteDays(l)}d</div>`);
-    }
-    out.push(html`<div key=${l.symbol} class="leg2"><${LegPills} l=${l} /></div>`);
+// name the strategy for one expiration's legs (sorted by strike)
+function classify(ls) {
+  const puts = ls.filter(l => l.option_type === "P");
+  const calls = ls.filter(l => l.option_type === "C");
+  const sameAbs = ls.every(l => Math.abs(l.qty) === Math.abs(ls[0].qty));
+  if (ls.length === 4 && puts.length === 2 && calls.length === 2 && sameAbs) {
+    const [pLo, pHi] = puts, [cLo, cHi] = calls;
+    if (pLo.qty > 0 && pHi.qty < 0 && cLo.qty < 0 && cHi.qty > 0)
+      return pHi.strike === cLo.strike ? "Iron Butterfly" : "Iron Condor";
+    if (pLo.qty < 0 && pHi.qty > 0 && cLo.qty > 0 && cHi.qty < 0)
+      return "Reverse Iron Condor";
   }
-  return out;
+  if (ls.length === 3 && (puts.length === 3 || calls.length === 3)) {
+    const [a, b, c] = ls;
+    if (a.qty === c.qty && b.qty === -2 * a.qty)
+      return (a.qty > 0 ? "" : "Reverse ") + "Butterfly";
+  }
+  if (ls.length === 2 && puts.length === 1 && calls.length === 1
+      && Math.sign(puts[0].qty) === Math.sign(calls[0].qty)) {
+    const kind = puts[0].strike === calls[0].strike ? "Straddle" : "Strangle";
+    return (puts[0].qty < 0 ? "Short " : "") + kind;
+  }
+  if (ls.length === 2 && (puts.length === 2 || calls.length === 2)
+      && ls[0].qty === -ls[1].qty)
+    return "Vertical";
+  if (ls.length === 1)
+    return (ls[0].qty < 0 ? "Short " : "") + (ls[0].option_type === "C" ? "Call" : "Put");
+  return "Custom";
+}
+
+// equity legs first, then one cluster per expiration labeled with the
+// detected strategy; shared by the left panel and the position table
+function clusterLegs(legs) {
+  const clusters = [];
+  const eq = legs.filter(l => l.strike == null);
+  if (eq.length) clusters.push({
+    label: eq[0].symbol?.includes("/") ? "Futures" : "Stock", legs: eq });
+  const byExp = {};
+  for (const l of legs) if (l.strike != null) (byExp[l.expiration] ??= []).push(l);
+  for (const exp of Object.keys(byExp).sort()) {
+    const ls = byExp[exp].sort((a, b) =>
+      a.strike - b.strike || (a.option_type === "P" ? -1 : 1));
+    clusters.push({ label: `${classify(ls)} · ${dteDays(ls[0])}d`, legs: ls });
+  }
+  return clusters;
+}
+
+function GroupLegs({ legs }) {
+  return clusterLegs(legs).map(c => html`
+    <div key=${c.label}>
+      <div class="subexp">${c.label}</div>
+      ${c.legs.map(l => html`<${LegPills} key=${l.symbol} l=${l} />`)}
+    </div>`);
 }
 
 function App() {
@@ -415,12 +460,11 @@ function Analysis({ ana, stale }) {
     </div>`;
 }
 
-function PositionTable({ stats: raw }) {
-  const stats = [...raw].sort((a, b) =>
-    (a.strike == null ? "" : a.expiration).localeCompare(b.strike == null ? "" : b.expiration)
-    || (a.strike ?? 0) - (b.strike ?? 0));
+function PositionTable({ stats }) {
   const num = (v, d=2) => html`<span class="num ${v>0?'pos':v<0?'neg':''}">${fmt(v,d)}</span>`;
-  const tot = k => stats.reduce((a, s) => a + s[k], 0);
+  const clusters = clusterLegs(stats);
+  const sum = (ls, k) => ls.reduce((a, s) => a + s[k], 0);
+  const tot = k => sum(stats, k);
   return html`
     <table class="pos">
       <thead><tr>
@@ -428,19 +472,31 @@ function PositionTable({ stats: raw }) {
         <th>IV</th><th>Cst</th><th>Ext</th><th>P/L Open</th>
       </tr></thead>
       <tbody>
-        ${stats.map(s => html`
-          <tr key=${s.symbol}>
-            <td><${LegPills} l=${{...s, dte_years: s.dte_days / 365}} /></td>
-            <td>${fmt(s.trd_prc)}</td>
-            <td>${fmt(s.mark)}</td>
-            <td>${s.strike != null ? s.dte_days + "d" : "—"}</td>
-            <td>${fmt(s.delta)}</td>
-            <td>${num(s.theta)}</td>
-            <td>${s.iv != null ? (s.iv * 100).toFixed(1) + "%" : "—"}</td>
-            <td>${fmt(s.cost)}</td>
-            <td>${fmt(s.ext)}</td>
-            <td>${num(s.pl_open)}</td>
-          </tr>`)}
+        ${clusters.map(c => html`
+          <${React.Fragment} key=${c.label}>
+            <tr class="grp">
+              <td>${c.label}</td><td></td><td></td><td></td>
+              <td>${fmt(sum(c.legs, "delta"))}</td>
+              <td>${num(sum(c.legs, "theta"))}</td>
+              <td></td>
+              <td>${fmt(sum(c.legs, "cost"))}</td>
+              <td>${fmt(sum(c.legs, "ext"))}</td>
+              <td>${num(sum(c.legs, "pl_open"))}</td>
+            </tr>
+            ${c.legs.map(s => html`
+              <tr key=${s.symbol}>
+                <td><${LegPills} l=${s} /></td>
+                <td>${fmt(s.trd_prc)}</td>
+                <td>${fmt(s.mark)}</td>
+                <td>${s.strike != null ? s.dte_days + "d" : "—"}</td>
+                <td>${fmt(s.delta)}</td>
+                <td>${num(s.theta)}</td>
+                <td>${s.iv != null ? (s.iv * 100).toFixed(1) + "%" : "—"}</td>
+                <td>${fmt(s.cost)}</td>
+                <td>${fmt(s.ext)}</td>
+                <td>${num(s.pl_open)}</td>
+              </tr>`)}
+          <//>`)}
         <tr class="tot">
           <td>Σ</td><td></td><td></td><td></td>
           <td>${fmt(tot("delta"))}</td>
