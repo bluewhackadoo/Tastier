@@ -497,12 +497,25 @@ function chartOverlay(props, ana) {
   </g>`;
 }
 
-// map an underlying to a TradingView symbol; futures use the continuous
-// front-month contract (e.g. /CLU6 -> CL1!), equities pass through
+// tastytrade cash-index underlyings -> their TradingView symbols. Indices
+// need an exchange prefix; bare "SPX" resolves to the wrong instrument on
+// TradingView, so map them to the CBOE/index feeds explicitly.
+const TV_INDEX = {
+  SPX: "SP:SPX", SPXW: "SP:SPX", XSP: "CBOE:XSP",
+  NDX: "NASDAQ:NDX", NDXP: "NASDAQ:NDX", RUT: "CBOE:RUT",
+  VIX: "CBOE:VIX", VX: "CBOE:VIX", DJX: "TVC:DJI",
+};
+
+// map an underlying to a TradingView symbol; indices use their exchange
+// ticker, futures use the continuous front-month contract (/CLU6 -> CL1!),
+// equities pass through
 function tvSymbol(sel) {
-  if (!sel || !sel.startsWith("/")) return sel || "";
-  const m = sel.slice(1).match(/^([A-Z0-9]+?)([FGHJKMNQUVXZ]\d{1,2})?$/);
-  return (m ? m[1] : sel.slice(1)) + "1!";
+  if (!sel) return "";
+  if (sel.startsWith("/")) {
+    const m = sel.slice(1).match(/^([A-Z0-9]+?)([FGHJKMNQUVXZ]\d{1,2})?$/);
+    return (m ? m[1] : sel.slice(1)) + "1!";
+  }
+  return TV_INDEX[sel] || sel;
 }
 
 // TradingView advanced-chart embed (1m); falls back to the local DXLink
