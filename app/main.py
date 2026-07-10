@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -135,6 +136,20 @@ def _leg_stats(legs_raw: list[dict], spot: float) -> list[dict]:
             "ext": r2(-qm * (mark - intrinsic)),
             "pl_open": r2(qm * (mark - l["open_price"])),
         })
+    return out
+
+
+@app.get("/api/candles/{symbol:path}")
+async def candles(symbol: str) -> list[dict]:
+    """1-minute candles for a DXLink symbol (subscribes on first request)."""
+    await relay.ensure_candles(symbol)
+    out = relay.candle_list(symbol)
+    if not out:  # give the freshly-restarted stream a moment to backfill
+        for _ in range(20):
+            await asyncio.sleep(0.25)
+            out = relay.candle_list(symbol)
+            if out:
+                break
     return out
 
 

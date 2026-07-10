@@ -143,12 +143,20 @@ def theta_curve(legs: list[Leg], spots: list[float]) -> list[float]:
 
 
 def spot_grid(center: float, legs: list[Leg], points: int = 121) -> list[float]:
-    """Grid spanning strikes +/- padding, always including the center."""
+    """Grid spanning strikes +/- padding, always including the center.
+
+    Padding scales with the strike span (not the spot level) so tight
+    structures on big underlyings (e.g. SPX 0DTE) don't drown in flat wings;
+    positions without strikes fall back to +/-5% of spot.
+    """
     strikes = [l.strike for l in legs if l.strike is not None]
     lo = min(strikes + [center]) if strikes else center
     hi = max(strikes + [center]) if strikes else center
-    span = max(hi - lo, center * 0.05, 1.0)
-    lo, hi = lo - span * 0.35, hi + span * 0.35
+    if strikes:
+        pad = max((hi - lo) * 0.40, center * 0.01, 1.0)
+    else:
+        pad = max(center * 0.05, 1.0)
+    lo, hi = lo - pad, hi + pad
     step = (hi - lo) / (points - 1)
     return [lo + i * step for i in range(points)]
 

@@ -63,12 +63,22 @@
   table.pos tr.grp td { background: #1a212c; font-weight: 600; color: #dfe6ef;
                         padding-top: 5px; }
   .num.pos { color: var(--up); } .num.neg { color: var(--down); }
-  table.summary { border-collapse: collapse; margin-bottom: 12px; }
-  table.summary th { color: var(--dim); font: 10px var(--mono); font-weight: 400;
-                     text-transform: uppercase; letter-spacing: .06em;
-                     text-align: right; padding: 2px 16px 2px 0; }
-  table.summary td { font: 600 13px var(--mono); text-align: right;
-                     padding: 1px 16px 6px 0; }
+  .topbar { display: flex; gap: 16px; margin-bottom: 12px; align-items: stretch; }
+  .sumgrid { flex: 1 1 50%; min-width: 0; display: grid; align-content: start;
+             grid-template-columns: repeat(4, minmax(80px, 1fr)); gap: 8px 14px; }
+  .scell .k { font: 10px var(--mono); color: var(--dim); text-transform: uppercase;
+              letter-spacing: .06em; padding-bottom: 2px;
+              border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .scell .v { font: 600 13px var(--mono); padding-top: 3px; overflow-wrap: break-word; }
+  .candlebox { flex: 1 1 50%; min-width: 0; position: relative;
+               background: var(--panel); border: 1px solid var(--line);
+               border-radius: 8px; min-height: 120px; }
+  .candlebox svg { display: block; width: 100%; height: 120px; }
+  .cinfo { position: absolute; top: 6px; left: 10px; font: 11px var(--mono);
+           color: var(--dim); }
+  .cinfo b { color: var(--text); }
+  .candle-empty { display: flex; align-items: center; justify-content: center;
+                  height: 120px; color: var(--dim); font: 12px var(--mono); }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr));
            gap: 10px; margin-bottom: 16px; }
   .card { background: var(--panel); border: 1px solid var(--line);
@@ -347,8 +357,9 @@ function chartOverlay(props, ana) {
   const x = Object.values(xMap)[0].scale, y = Object.values(yMap)[0].scale;
   const { left, top, width, height } = props.offset;
   const y0 = y(0), right = left + width, bottom = top + height;
-  const HALF = 12;                       // half-height of the center price strip
+  const HALF = 13;                       // half-height of the center price strip
   const font = "Consolas, monospace";
+  const FS = 13;                         // base font size for chart labels
 
   const gridXs = ana.grid, expA = ana.expiration_pl, thA = ana.theta || [];
   const [lo, hi] = x.domain();  // reflects the current zoom window
@@ -356,11 +367,11 @@ function chartOverlay(props, ana) {
   const ticks = [];
   for (let t = Math.ceil(lo / step) * step; t <= hi + 1e-9; t += step)
     ticks.push(+t.toFixed(6));
-  // keep tick value labels clear of the corner row labels
-  const rowTicks = ticks.filter(t => x(t) < right - 42);
+  // keep tick value labels clear of the corner row labels (now inside the plot)
+  const rowTicks = ticks.filter(t => x(t) > left + 88 && x(t) < right - 88);
 
   // lot flags: long above the strip, short below; stagger when crowded
-  const FW = 40, FH = 18, GAP = 9;
+  const FW = 48, FH = 20, GAP = 9;
   const flags = (ana.legs || []).filter(l => l.strike != null && l.strike >= lo && l.strike <= hi)
     .map(l => ({ xx: x(l.strike), up: l.qty > 0, label: `${l.qty}${l.option_type}` }))
     .sort((a, b) => a.xx - b.xx);
@@ -375,10 +386,10 @@ function chartOverlay(props, ana) {
 
   return html`<g>
     <!-- top row: P/L at expiration -->
-    <text x=${6} y=${top - 8} fill="#8b97a8" font-size="11" font-family=${font}>P/L @ EXP</text>
-    <text x=${props.width - 6} y=${top - 8} text-anchor="end" fill="#8b97a8" font-size="11" font-family=${font}>P/L @ EXP</text>
+    <text x=${left + 2} y=${top - 9} fill="#8b97a8" font-size=${FS} font-family=${font}>P/L @ EXP</text>
+    <text x=${right - 2} y=${top - 9} text-anchor="end" fill="#8b97a8" font-size=${FS} font-family=${font}>P/L @ EXP</text>
     ${rowTicks.map(t => html`
-      <text key=${"e" + t} x=${x(t)} y=${top - 8} text-anchor="middle" font-size="11"
+      <text key=${"e" + t} x=${x(t)} y=${top - 9} text-anchor="middle" font-size=${FS}
             font-family=${font} fill=${signColor(interp(gridXs, expA, t))}>
         ${fmtK(interp(gridXs, expA, t))}</text>`)}
 
@@ -395,18 +406,18 @@ function chartOverlay(props, ana) {
           fill-opacity="0.15" />
     <line x1=${left} x2=${right} y1=${y0 - HALF} y2=${y0 - HALF} stroke="#2a3341" />
     <line x1=${left} x2=${right} y1=${y0 + HALF} y2=${y0 + HALF} stroke="#2a3341" />
-    ${ticks.filter(t => Math.abs(x(t) - x(ana.spot)) > 18).map(t => html`
-      <text key=${"p" + t} x=${x(t)} y=${y0 + 4} text-anchor="middle" font-size="11"
+    ${ticks.filter(t => Math.abs(x(t) - x(ana.spot)) > 22).map(t => html`
+      <text key=${"p" + t} x=${x(t)} y=${y0 + 4.5} text-anchor="middle" font-size=${FS}
             font-family=${font} fill="#8b97a8">${fmt(t, step < 1 ? 2 : 0)}</text>`)}
     ${ana.spot >= lo && ana.spot <= hi ? html`
-      <circle cx=${x(ana.spot)} cy=${y0} r=${3.5} fill="#dfe6ef" stroke="#0e1116" />` : null}
+      <circle cx=${x(ana.spot)} cy=${y0} r=${4} fill="#dfe6ef" stroke="#0e1116" />` : null}
 
     <!-- breakeven tags on the strip -->
     ${ana.breakevens.filter(b => b >= lo && b <= hi).map(b => html`
       <g key=${"b" + b}>
-        <rect x=${x(b) - 24} y=${y0 - HALF - 16} width=${48} height=${14} rx=${3}
+        <rect x=${x(b) - 29} y=${y0 - HALF - 19} width=${58} height=${17} rx=${3}
               fill="#2b2413" stroke="#f5b94e" stroke-width="0.5" />
-        <text x=${x(b)} y=${y0 - HALF - 5.5} text-anchor="middle" font-size="10"
+        <text x=${x(b)} y=${y0 - HALF - 6} text-anchor="middle" font-size="12"
               font-family=${font} fill="#f5b94e">${fmt(b, 2)}</text>
       </g>`)}
 
@@ -420,18 +431,57 @@ function chartOverlay(props, ana) {
         <rect x=${f.xx - FW/2} y=${yr} width=${FW} height=${FH} rx=${3}
               fill="#1d242f" stroke="#3a4656" />
         <rect x=${f.xx - FW/2} y=${yr} width=${3} height=${FH} fill="#ff5d73" />
-        <text x=${f.xx + 1.5} y=${yr + FH - 5} text-anchor="middle" font-size="11"
+        <text x=${f.xx + 1.5} y=${yr + FH - 6} text-anchor="middle" font-size=${FS}
               font-family=${font} fill="#dfe6ef">${f.label}</text>
       </g>`;})}
 
     <!-- bottom row: position theta -->
-    <text x=${6} y=${bottom + 18} fill="#8b97a8" font-size="11" font-family=${font}>θ THEO</text>
-    <text x=${props.width - 6} y=${bottom + 18} text-anchor="end" fill="#8b97a8" font-size="11" font-family=${font}>θ THEO</text>
+    <text x=${left + 2} y=${bottom + 20} fill="#8b97a8" font-size=${FS} font-family=${font}>θ THEO</text>
+    <text x=${right - 2} y=${bottom + 20} text-anchor="end" fill="#8b97a8" font-size=${FS} font-family=${font}>θ THEO</text>
     ${thA.length ? rowTicks.map(t => html`
-      <text key=${"t" + t} x=${x(t)} y=${bottom + 18} text-anchor="middle" font-size="11"
+      <text key=${"t" + t} x=${x(t)} y=${bottom + 20} text-anchor="middle" font-size=${FS}
             font-family=${font} fill=${signColor(interp(gridXs, thA, t))}>
         ${interp(gridXs, thA, t).toFixed(2)}</text>`) : null}
   </g>`;
+}
+
+// 1-minute mini candlestick chart for the selected group's spot symbol
+function CandleChart({ symbol }) {
+  const [cs, setCs] = useState(null);
+  useEffect(() => {
+    if (!symbol) return;
+    let alive = true;
+    setCs(null);
+    const load = () => fetch(`/api/candles/${encodeURIComponent(symbol)}`)
+      .then(r => r.ok ? r.json() : [])
+      .then(d => { if (alive) setCs(d); })
+      .catch(() => {});
+    load();
+    const t = setInterval(load, 15000);
+    return () => { alive = false; clearInterval(t); };
+  }, [symbol]);
+  if (!cs) return html`<div class="candlebox"><div class="candle-empty">loading candles…</div></div>`;
+  const bars = cs.slice(-75);
+  if (!bars.length) return html`<div class="candlebox"><div class="candle-empty">no intraday data</div></div>`;
+  const lo = Math.min(...bars.map(b => b.l)), hi = Math.max(...bars.map(b => b.h));
+  const H = 120, W = bars.length * 7, padY = 10;
+  const y = p => H - padY - (p - lo) / (hi - lo || 1) * (H - 2 * padY);
+  const last = bars[bars.length - 1];
+  const chg = (last.c - bars[0].o) / (bars[0].o || 1) * 100;
+  return html`
+    <div class="candlebox">
+      <svg viewBox=${`0 0 ${W} ${H}`} preserveAspectRatio="none">
+        ${bars.map((b, i) => {
+          const cx = i * 7 + 3.5, up = b.c >= b.o, col = up ? "#2dd4a7" : "#ff5d73";
+          return html`<g key=${b.t}>
+            <line x1=${cx} x2=${cx} y1=${y(b.h)} y2=${y(b.l)} stroke=${col} />
+            <rect x=${cx - 2.5} width="5" y=${y(Math.max(b.o, b.c))}
+                  height=${Math.max(1, Math.abs(y(b.o) - y(b.c)))} fill=${col} />
+          </g>`;})}
+      </svg>
+      <div class="cinfo">${symbol} · 1m · <b>${fmt(last.c)}</b>
+        <span class="num ${chg >= 0 ? 'pos' : 'neg'}"> ${chg >= 0 ? '+' : ''}${fmt(chg, 2)}%</span></div>
+    </div>`;
 }
 
 function ChartTip({ active, payload }) {
@@ -443,7 +493,7 @@ function ChartTip({ active, payload }) {
     </div>`;
   return html`
     <div style=${{background:'#1d242fee',border:'1px solid #2a3341',borderRadius:'4px',
-                  padding:'8px 10px',font:'11px Consolas, monospace'}}>
+                  padding:'8px 10px',font:'13px Consolas, monospace'}}>
       ${row("PRICE", fmt(d.spot), "#dfe6ef")}
       ${row("P/L EXP", fmt(d.exp), signColor(d.exp))}
       ${row("P/L THEO", fmt(d.t0), signColor(d.t0))}
@@ -475,7 +525,7 @@ function Analysis({ ana, stale, sel }) {
   useEffect(() => {
     const el = chartRef.current;
     if (!el) return;
-    const PAD = 12 + 62;  // #chart padding + chart margin
+    const PAD = 12 + 12;  // #chart padding + chart margin
     const clamp = (lo, hi) => {
       const [flo, fhi] = fullRef.current, span = hi - lo;
       if (lo < flo) { lo = flo; hi = flo + span; }
@@ -524,23 +574,25 @@ function Analysis({ ana, stale, sel }) {
 
   const pct = ana.net_open_cost ? ana.live_pl / Math.abs(ana.net_open_cost) * 100 : null;
   const sv = (v, txt) => html`<span class="num ${v>0?'pos':v<0?'neg':''}">${txt}</span>`;
+  const cell = (k, v) => html`<div class="scell"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+  const candleSym = ana.legs?.[0]?.underlying_streamer || sel;
   return html`
     <div>
-      <table class="summary"><thead><tr>
-        <th>Live P/L</th><th>P/L Opn%</th><th>P/L Day</th>
-        <th>Spot</th><th>Max Profit</th><th>Max Loss</th><th>Breakevens</th>
-      </tr></thead><tbody><tr>
-        <td>${sv(ana.live_pl, money(ana.live_pl))}</td>
-        <td>${pct == null ? "—" : sv(pct, fmt(pct, 1) + "%")}</td>
-        <td>${ana.pl_day == null ? "—" : sv(ana.pl_day, money(ana.pl_day))}</td>
-        <td>${fmt(ana.spot)}${stale ? html`<span class="stale">stale</span>` : ''}</td>
-        <td>${sv(1, money(ana.max_profit))}</td>
-        <td>${sv(-1, money(ana.max_loss))}</td>
-        <td>${ana.breakevens.map(b => fmt(b)).join(" / ") || "—"}</td>
-      </tr></tbody></table>
+      <div class="topbar">
+        <div class="sumgrid">
+          ${cell("Live P/L", sv(ana.live_pl, money(ana.live_pl)))}
+          ${cell("P/L Opn%", pct == null ? "—" : sv(pct, fmt(pct, 1) + "%"))}
+          ${cell("P/L Day", ana.pl_day == null ? "—" : sv(ana.pl_day, money(ana.pl_day)))}
+          ${cell("Spot", html`${fmt(ana.spot)}${stale ? html`<span class="stale">stale</span>` : ''}`)}
+          ${cell("Max Profit", sv(1, money(ana.max_profit)))}
+          ${cell("Max Loss", sv(-1, money(ana.max_loss)))}
+          ${cell("Breakevens", ana.breakevens.map(b => fmt(b)).join(" / ") || "—")}
+        </div>
+        <${CandleChart} symbol=${candleSym} />
+      </div>
       <div id="chart" ref=${chartRef}>
         <${ResponsiveContainer} width="100%" height=${480}>
-          <${ComposedChart} data=${data} margin=${{top:26,right:62,bottom:26,left:62}}>
+          <${ComposedChart} data=${data} margin=${{top:28,right:12,bottom:28,left:12}}>
             <${XAxis} dataKey="spot" hide=${true} type="number"
                       allowDataOverflow=${!!view}
                       domain=${view ?? ["dataMin", "dataMax"]} />
@@ -581,8 +633,8 @@ function PositionTable({ stats }) {
               <td>${fmt(sum(c.legs, "delta"))}</td>
               <td>${num(sum(c.legs, "theta"))}</td>
               <td></td>
-              <td>${fmt(sum(c.legs, "cost"))}</td>
-              <td>${fmt(sum(c.legs, "ext"))}</td>
+              <td>${num(sum(c.legs, "cost"))}</td>
+              <td>${num(sum(c.legs, "ext"))}</td>
               <td>${num(sum(c.legs, "pl_open"))}</td>
             </tr>
             ${c.legs.map(s => html`
@@ -594,8 +646,8 @@ function PositionTable({ stats }) {
                 <td>${fmt(s.delta)}</td>
                 <td>${num(s.theta)}</td>
                 <td>${s.iv != null ? (s.iv * 100).toFixed(1) + "%" : "—"}</td>
-                <td>${fmt(s.cost)}</td>
-                <td>${fmt(s.ext)}</td>
+                <td>${num(s.cost)}</td>
+                <td>${num(s.ext)}</td>
                 <td>${num(s.pl_open)}</td>
               </tr>`)}
           <//>`)}
@@ -604,8 +656,8 @@ function PositionTable({ stats }) {
           <td>${fmt(tot("delta"))}</td>
           <td>${num(tot("theta"))}</td>
           <td></td>
-          <td>${fmt(tot("cost"))}</td>
-          <td>${fmt(tot("ext"))}</td>
+          <td>${num(tot("cost"))}</td>
+          <td>${num(tot("ext"))}</td>
           <td>${num(tot("pl_open"))}</td>
         </tr>
       </tbody>
