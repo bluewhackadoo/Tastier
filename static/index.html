@@ -141,7 +141,7 @@ function App() {
     <header>
       <h1>TASTY LIVE ANALYSIS</h1>
       <span class="env ${setup.env==='live'?'live':''}">${setup.env.toUpperCase()}</span>
-      <span style="color:var(--dim);font-size:12px">acct ${account}</span>
+      <span style=${{color:'var(--dim)',fontSize:'12px'}}>acct ${account}</span>
       <span class="conn ${wsOn?'on':''}"><span class="dot"></span>${wsOn?'stream live':'stream down'}</span>
     </header>
     <main>
@@ -182,7 +182,7 @@ function Analysis({ ana, stale }) {
         <div class="card"><div class="k">Max loss</div>
           <div class="v neg">${money(ana.max_loss)}</div></div>
         <div class="card"><div class="k">Breakevens</div>
-          <div class="v" style="font-size:14px">${ana.breakevens.map(b=>fmt(b)).join(" / ")||"—"}</div></div>
+          <div class="v" style=${{fontSize:'14px'}}>${ana.breakevens.map(b=>fmt(b)).join(" / ")||"—"}</div></div>
       </div>
       <div id="chart">
         <${ResponsiveContainer} width="100%" height=${420}>
@@ -212,9 +212,9 @@ function Analysis({ ana, stale }) {
 function SetupHelp({ setup }) {
   return html`
     <div class="setupbox">
-      <h2 style="margin-top:0">Setup needed (stage: ${setup.stage})</h2>
+      <h2 style=${{marginTop:0}}>Setup needed (stage: ${setup.stage})</h2>
       ${setup.problems.map(p => html`<div key=${p} class="prob">✗ ${p}</div>`)}
-      <ol style="color:var(--dim)">
+      <ol style=${{color:'var(--dim)'}}>
         <li>Copy <code>.env.example</code> to <code>.env</code></li>
         <li>Create a read-only OAuth grant at my.tastytrade.com → API</li>
         <li>Paste <code>TT_SECRET</code> and <code>TT_REFRESH</code> into <code>.env</code></li>
