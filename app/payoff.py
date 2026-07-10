@@ -128,6 +128,26 @@ def pl_curve(
     return [value_at(legs, s, at_expiration) - cost for s in spots]
 
 
+def value_at_time(legs: list[Leg], spot: float, t_years: float) -> float:
+    """Position value at a future date t: legs already expired go to
+    intrinsic, later legs keep their remaining time value."""
+    total = 0.0
+    for l in legs:
+        if l.strike is None:
+            total += l.qty * l.multiplier * spot
+        else:
+            remaining = max(l.dte_years - t_years, 0.0)
+            total += l.qty * l.multiplier * bs_price(
+                spot, l.strike, remaining, l.iv, l.option_type or "C"
+            )
+    return total
+
+
+def pl_curve_at(legs: list[Leg], spots: list[float], t_years: float) -> list[float]:
+    cost = net_open_cost(legs)
+    return [value_at_time(legs, s, t_years) - cost for s in spots]
+
+
 def theta_curve(legs: list[Leg], spots: list[float]) -> list[float]:
     """Position theta ($/day) at each hypothetical spot. Equity legs are 0."""
     out: list[float] = []
@@ -186,7 +206,16 @@ def analysis(legs: list[Leg], spot: float) -> dict:
     t0 = pl_curve(legs, grid, at_expiration=False)
     cost = net_open_cost(legs)
     live_value = value_at(legs, spot, at_expiration=False)
+    # one curve per intermediate expiration (chronological); the final
+    # expiration is the plain expiration_pl curve
+    dtes = sorted({round(l.dte_years * 365) for l in legs if l.strike is not None})
+    curves = [
+        {"dte_days": d, "pl": [round(v, 2) for v in pl_curve_at(legs, grid, d / 365.0)]}
+        for d in dtes[:-1]
+    ]
     return {
+        "curves": curves,
+        "exp_dte": dtes[-1] if dtes else 0,
         "spot": spot,
         "grid": [round(x, 4) for x in grid],
         "expiration_pl": [round(x, 2) for x in exp],

@@ -142,6 +142,9 @@ const niceStep = raw => {
   return 10 * p;
 };
 
+// intermediate-expiration curve palette, nearest date first
+const CURVE_COLORS = ["#e879b0", "#8ab4ff", "#c084fc", "#f0d264"];
+
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const mmmdd = iso => {
   if (!iso) return "";
@@ -196,7 +199,34 @@ function classify(ls) {
   return "Custom";
 }
 
-// equity legs first, then one cluster per expiration labeled with the
+// pair long/short legs of one option type into verticals (by strike order);
+// returns null unless the legs split cleanly into matching pairs
+function extractVerticals(legs) {
+  const longs = legs.filter(l => l.qty > 0), shorts = legs.filter(l => l.qty < 0);
+  if (!longs.length || longs.length !== shorts.length) return null;
+  if (!longs.every((l, i) => Math.abs(l.qty) === Math.abs(shorts[i].qty))) return null;
+  return longs.map((l, i) => [l, shorts[i]]);
+}
+
+// a same-expiry cluster that classifies as Custom may really be several
+// stacked strategies (e.g. two iron condors opened separately); split it
+// into verticals and pair put+call verticals into condors
+function decompose(ls) {
+  if (ls.length < 4 || classify(ls) !== "Custom") return [ls];
+  const pv = extractVerticals(ls.filter(l => l.option_type === "P"));
+  const cv = extractVerticals(ls.filter(l => l.option_type === "C"));
+  const byStrike = sub => sub.sort((a, b) =>
+    a.strike - b.strike || (a.option_type === "P" ? -1 : 1));
+  const puts = ls.filter(l => l.option_type === "P");
+  const calls = ls.filter(l => l.option_type === "C");
+  if (pv && cv && pv.length === cv.length)
+    return pv.map((v, i) => byStrike([...v, ...cv[i]]));
+  if (pv && !calls.length) return pv.map(byStrike);   // stacked put verticals
+  if (cv && !puts.length) return cv.map(byStrike);    // stacked call verticals
+  return [ls];
+}
+
+// equity legs first, then clusters per expiration labeled with the
 // detected strategy; shared by the left panel and the position table
 function clusterLegs(legs) {
   const clusters = [];
@@ -208,14 +238,15 @@ function clusterLegs(legs) {
   for (const exp of Object.keys(byExp).sort()) {
     const ls = byExp[exp].sort((a, b) =>
       a.strike - b.strike || (a.option_type === "P" ? -1 : 1));
-    clusters.push({ label: `${classify(ls)} · ${dteDays(ls[0])}d`, legs: ls });
+    for (const sub of decompose(ls))
+      clusters.push({ label: `${classify(sub)} · ${dteDays(sub[0])}d`, legs: sub });
   }
   return clusters;
 }
 
 function GroupLegs({ legs }) {
   return clusterLegs(legs).map(c => html`
-    <div key=${c.label}>
+    <div key=${c.label + ":" + c.legs[0].symbol}>
       <div class="subexp">${c.label}</div>
       ${c.legs.map(l => html`<${LegPills} key=${l.symbol} l=${l} />`)}
     </div>`);
@@ -370,6 +401,21 @@ function chartOverlay(props, ana) {
   // keep tick value labels clear of the corner row labels (now inside the plot)
   const rowTicks = ticks.filter(t => x(t) > left + 88 && x(t) < right - 88);
 
+  // chronological curve labels pinned to the right edge, de-overlapped
+  const hasOpts = (ana.legs || []).some(l => l.strike != null);
+  const seriesLabels = [
+    { v: interp(gridXs, ana.t0_pl, hi), color: "#f59e0b", txt: "T+0" },
+    ...(ana.curves || []).map((c, j) => ({
+      v: interp(gridXs, c.pl, hi),
+      color: CURVE_COLORS[j % CURVE_COLORS.length], txt: c.dte_days + "d" })),
+    ...(hasOpts ? [{ v: interp(gridXs, expA, hi), color: "#8fd8a8",
+                     txt: (ana.exp_dte ?? "") + "d exp" }] : []),
+  ].map(s => ({ ...s, yy: Math.min(Math.max(y(s.v), top + 12), bottom - 6) }))
+   .sort((a, b) => a.yy - b.yy);
+  for (let i = 1; i < seriesLabels.length; i++)
+    if (seriesLabels[i].yy - seriesLabels[i - 1].yy < 15)
+      seriesLabels[i].yy = seriesLabels[i - 1].yy + 15;
+
   // lot flags: long above the strip, short below; stagger when crowded
   const FW = 48, FH = 20, GAP = 9;
   const flags = (ana.legs || []).filter(l => l.strike != null && l.strike >= lo && l.strike <= hi)
@@ -442,6 +488,12 @@ function chartOverlay(props, ana) {
       <text key=${"t" + t} x=${x(t)} y=${bottom + 20} text-anchor="middle" font-size=${FS}
             font-family=${font} fill=${signColor(interp(gridXs, thA, t))}>
         ${interp(gridXs, thA, t).toFixed(2)}</text>`) : null}
+
+    <!-- per-curve DTE labels at the right edge -->
+    ${seriesLabels.map(s => html`
+      <text key=${"sl" + s.txt} x=${right - 4} y=${s.yy} text-anchor="end"
+            font-size="12" font-family=${font} fill=${s.color}
+            stroke="#0e1116" stroke-width="3" paint-order="stroke">${s.txt}</text>`)}
   </g>`;
 }
 
@@ -530,7 +582,7 @@ function CandleChart({ symbol }) {
     </div>`;
 }
 
-function ChartTip({ active, payload }) {
+function ChartTip({ active, payload, curves }) {
   if (!active || !payload || !payload.length) return null;
   const d = payload[0].payload;
   const row = (k, v, c) => html`
@@ -541,8 +593,10 @@ function ChartTip({ active, payload }) {
     <div style=${{background:'#1d242fee',border:'1px solid #2a3341',borderRadius:'4px',
                   padding:'8px 10px',font:'13px Consolas, monospace'}}>
       ${row("PRICE", fmt(d.spot), "#dfe6ef")}
-      ${row("P/L EXP", fmt(d.exp), signColor(d.exp))}
       ${row("P/L THEO", fmt(d.t0), signColor(d.t0))}
+      ${(curves || []).map((c, j) => row(`P/L ${c.dte_days}d`, fmt(d["c" + j]),
+          CURVE_COLORS[j % CURVE_COLORS.length]))}
+      ${row("P/L EXP", fmt(d.exp), signColor(d.exp))}
       ${row("θ THEO", fmt(d.theta), "#c26bd4")}
     </div>`;
 }
@@ -553,11 +607,14 @@ function Analysis({ ana, stale, sel }) {
     theta: (ana.theta || [])[i] ?? 0,
     expPos: Math.max(ana.expiration_pl[i], 0),
     expNeg: Math.min(ana.expiration_pl[i], 0),
+    ...Object.fromEntries((ana.curves || []).map((c, j) => ["c" + j, c.pl[i]])),
   })), [ana]);
   // symmetric Y domain so P/L zero sits exactly on the center price strip
   const yMax = useMemo(() => {
     let m = 1;
     for (const d of data) m = Math.max(m, Math.abs(d.exp), Math.abs(d.t0));
+    for (const c of ana.curves || [])
+      for (const v of c.pl) m = Math.max(m, Math.abs(v));
     return m * 1.2;
   }, [data]);
 
@@ -643,13 +700,18 @@ function Analysis({ ana, stale, sel }) {
                       allowDataOverflow=${!!view}
                       domain=${view ?? ["dataMin", "dataMax"]} />
             <${YAxis} hide=${true} domain=${[-yMax, yMax]} />
-            <${Tooltip} content=${ChartTip} />
+            <${Tooltip} content=${p => html`<${ChartTip} ...${p} curves=${ana.curves} />`} />
             <${Area} type="monotone" dataKey="expPos" stroke="#3ddc97" strokeWidth=${1.5}
                      fill="#1b4d3a" fillOpacity=${0.55} baseValue=${0}
                      dot=${false} activeDot=${false} isAnimationActive=${false} />
             <${Area} type="monotone" dataKey="expNeg" stroke="#e0455e" strokeWidth=${1.5}
                      fill="#5c1e26" fillOpacity=${0.55} baseValue=${0}
                      dot=${false} activeDot=${false} isAnimationActive=${false} />
+            ${(ana.curves || []).map((c, j) => html`
+              <${Line} key=${"c" + j} type="monotone" dataKey=${"c" + j}
+                       stroke=${CURVE_COLORS[j % CURVE_COLORS.length]} dot=${false}
+                       strokeWidth=${1.5} isAnimationActive=${false}
+                       name=${c.dte_days + "d"} />`)}
             <${Line} type="monotone" dataKey="t0" stroke="#f59e0b" dot=${false}
                      strokeWidth=${2} isAnimationActive=${false} name="t0" />
             <${Customized} component=${p => chartOverlay(p, ana)} />
@@ -665,6 +727,12 @@ function PositionTable({ stats }) {
   const clusters = clusterLegs(stats);
   const sum = (ls, k) => ls.reduce((a, s) => a + s[k], 0);
   const tot = k => sum(stats, k);
+  // cash-flow signed per-unit prices, tastytrade-style: debits red (long
+  // pays to open, so negative trd prc), credits green; mark is the signed
+  // per-unit position value
+  const sTrd = s => (s.qty > 0 ? -1 : 1) * s.trd_prc;
+  const sMrk = s => (s.qty > 0 ? 1 : -1) * s.mark;
+  const sumBy = (ls, f) => ls.reduce((a, s) => a + f(s), 0);
   return html`
     <table class="pos">
       <thead><tr>
@@ -673,9 +741,12 @@ function PositionTable({ stats }) {
       </tr></thead>
       <tbody>
         ${clusters.map(c => html`
-          <${React.Fragment} key=${c.label}>
+          <${React.Fragment} key=${c.label + ":" + c.legs[0].symbol}>
             <tr class="grp">
-              <td>${c.label}</td><td></td><td></td><td></td>
+              <td>${c.label}</td>
+              <td>${num(sumBy(c.legs, sTrd))}</td>
+              <td>${num(sumBy(c.legs, sMrk))}</td>
+              <td>${c.legs[0].strike != null ? c.legs[0].dte_days + "d" : "—"}</td>
               <td>${fmt(sum(c.legs, "delta"))}</td>
               <td>${num(sum(c.legs, "theta"))}</td>
               <td></td>
@@ -686,8 +757,8 @@ function PositionTable({ stats }) {
             ${c.legs.map(s => html`
               <tr key=${s.symbol}>
                 <td><${LegPills} l=${s} /></td>
-                <td>${fmt(s.trd_prc)}</td>
-                <td>${fmt(s.mark)}</td>
+                <td>${num(sTrd(s))}</td>
+                <td>${num(sMrk(s))}</td>
                 <td>${s.strike != null ? s.dte_days + "d" : "—"}</td>
                 <td>${fmt(s.delta)}</td>
                 <td>${num(s.theta)}</td>
