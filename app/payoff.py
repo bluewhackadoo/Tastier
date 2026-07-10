@@ -22,6 +22,10 @@ def norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / SQRT2))
 
 
+def norm_pdf(x: float) -> float:
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+
 def bs_price(
     spot: float,
     strike: float,
@@ -41,6 +45,29 @@ def bs_price(
     if option_type == "C":
         return spot * norm_cdf(d1) - strike * math.exp(-r * t_years) * norm_cdf(d2)
     return strike * math.exp(-r * t_years) * norm_cdf(-d2) - spot * norm_cdf(-d1)
+
+
+def bs_theta(
+    spot: float,
+    strike: float,
+    t_years: float,
+    iv: float,
+    option_type: str,  # "C" or "P"
+    r: float = 0.0,
+) -> float:
+    """Black-Scholes theta per calendar day. Zero at/after expiration."""
+    if t_years <= 0 or iv <= 0:
+        return 0.0
+    sig_sqrt_t = iv * math.sqrt(t_years)
+    d1 = (math.log(spot / strike) + (r + 0.5 * iv * iv) * t_years) / sig_sqrt_t
+    d2 = d1 - sig_sqrt_t
+    theta = -(spot * norm_pdf(d1) * iv) / (2.0 * math.sqrt(t_years))
+    if r:
+        if option_type == "C":
+            theta -= r * strike * math.exp(-r * t_years) * norm_cdf(d2)
+        else:
+            theta += r * strike * math.exp(-r * t_years) * norm_cdf(-d2)
+    return theta / 365.0
 
 
 @dataclass
@@ -81,6 +108,20 @@ def pl_curve(
 ) -> list[float]:
     cost = net_open_cost(legs)
     return [value_at(legs, s, at_expiration) - cost for s in spots]
+
+
+def theta_curve(legs: list[Leg], spots: list[float]) -> list[float]:
+    """Position theta ($/day) at each hypothetical spot. Equity legs are 0."""
+    out: list[float] = []
+    for s in spots:
+        total = 0.0
+        for l in legs:
+            if l.strike is not None:
+                total += l.qty * l.multiplier * bs_theta(
+                    s, l.strike, l.dte_years, l.iv, l.option_type or "C"
+                )
+        out.append(total)
+    return out
 
 
 def spot_grid(center: float, legs: list[Leg], points: int = 121) -> list[float]:
@@ -124,6 +165,7 @@ def analysis(legs: list[Leg], spot: float) -> dict:
         "grid": [round(x, 4) for x in grid],
         "expiration_pl": [round(x, 2) for x in exp],
         "t0_pl": [round(x, 2) for x in t0],
+        "theta": [round(x, 2) for x in theta_curve(legs, grid)],
         "breakevens": [round(x, 2) for x in breakevens(grid, exp)],
         "max_profit": round(max(exp), 2),
         "max_loss": round(min(exp), 2),

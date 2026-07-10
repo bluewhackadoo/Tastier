@@ -69,11 +69,29 @@
 const { useState, useEffect, useRef, useMemo, createElement } = React;
 const html = htm.bind(createElement);
 const { ResponsiveContainer, ComposedChart, Line, Area, XAxis, YAxis,
-        CartesianGrid, ReferenceLine, Tooltip } = Recharts;
+        CartesianGrid, ReferenceLine, Tooltip, Customized } = Recharts;
 
 const fmt = (v, d=2) => v == null ? "—" :
   v.toLocaleString("en-US", {minimumFractionDigits:d, maximumFractionDigits:d});
 const money = v => (v < 0 ? "-$" : "$") + fmt(Math.abs(v));
+const fmtK = v => Math.abs(v) >= 1000 ? (v/1000).toFixed(2) + "K" : String(Math.round(v));
+const signColor = v => v >= 0 ? "#2dd4a7" : "#ff5d73";
+
+// linear interpolation of ys over sorted xs
+const interp = (xs, ys, x) => {
+  if (x <= xs[0]) return ys[0];
+  if (x >= xs[xs.length-1]) return ys[ys.length-1];
+  let lo = 0, hi = xs.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; xs[m] <= x ? lo = m : hi = m; }
+  const f = (x - xs[lo]) / (xs[hi] - xs[lo]);
+  return ys[lo] + f * (ys[hi] - ys[lo]);
+};
+
+const niceStep = raw => {
+  const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= raw) return m * p;
+  return 10 * p;
+};
 
 function App() {
   const [setup, setSetup] = useState(null);       // /api/setup/validate result
@@ -166,10 +184,127 @@ function App() {
     </main>`;
 }
 
+// custom overlay: center price strip, top P/L@EXP row, bottom theta row, lot flags
+function chartOverlay(props, ana) {
+  const xMap = props.xAxisMap, yMap = props.yAxisMap;
+  if (!xMap || !yMap) return null;
+  const x = Object.values(xMap)[0].scale, y = Object.values(yMap)[0].scale;
+  const { left, top, width, height } = props.offset;
+  const y0 = y(0), right = left + width, bottom = top + height;
+  const HALF = 12;                       // half-height of the center price strip
+  const font = "Consolas, monospace";
+
+  const gridXs = ana.grid, expA = ana.expiration_pl, thA = ana.theta || [];
+  const lo = gridXs[0], hi = gridXs[gridXs.length - 1];
+  const step = niceStep((hi - lo) / Math.max(4, Math.floor(width / 60)));
+  const ticks = [];
+  for (let t = Math.ceil(lo / step) * step; t <= hi + 1e-9; t += step)
+    ticks.push(+t.toFixed(6));
+  // keep tick value labels clear of the corner row labels
+  const rowTicks = ticks.filter(t => x(t) < right - 42);
+
+  // lot flags: long above the strip, short below; stagger when crowded
+  const FW = 40, FH = 18, GAP = 9;
+  const flags = (ana.legs || []).filter(l => l.strike != null)
+    .map(l => ({ xx: x(l.strike), up: l.qty > 0, label: `${l.qty}${l.option_type}` }))
+    .sort((a, b) => a.xx - b.xx);
+  const lastAt = { up: [], dn: [] };     // last x per stagger level, per side
+  for (const f of flags) {
+    const lv = lastAt[f.up ? "up" : "dn"];
+    let i = 0;
+    while (i < lv.length && f.xx - lv[i] < FW + 6) i++;
+    lv[i] = f.xx;
+    f.lvl = i;
+  }
+
+  return html`<g>
+    <!-- top row: P/L at expiration -->
+    <text x=${6} y=${top - 8} fill="#8b97a8" font-size="11" font-family=${font}>P/L @ EXP</text>
+    <text x=${props.width - 6} y=${top - 8} text-anchor="end" fill="#8b97a8" font-size="11" font-family=${font}>P/L @ EXP</text>
+    ${rowTicks.map(t => html`
+      <text key=${"e" + t} x=${x(t)} y=${top - 8} text-anchor="middle" font-size="11"
+            font-family=${font} fill=${signColor(interp(gridXs, expA, t))}>
+        ${fmtK(interp(gridXs, expA, t))}</text>`)}
+
+    <!-- vertical guides (drawn first so the strip covers them) -->
+    ${ana.breakevens.map(b => html`
+      <line key=${"bl" + b} x1=${x(b)} x2=${x(b)} y1=${top} y2=${bottom}
+            stroke="#f5b94e" stroke-dasharray="4 4" />`)}
+    <line x1=${x(ana.spot)} x2=${x(ana.spot)} y1=${top} y2=${bottom}
+          stroke="#7aa5ff" stroke-width="1.5" />
+
+    <!-- center price strip -->
+    <rect x=${left} y=${y0 - HALF} width=${width} height=${HALF * 2} fill="#10151d" />
+    <line x1=${left} x2=${right} y1=${y0 - HALF} y2=${y0 - HALF} stroke="#2a3341" />
+    <line x1=${left} x2=${right} y1=${y0 + HALF} y2=${y0 + HALF} stroke="#2a3341" />
+    ${ticks.filter(t => Math.abs(x(t) - x(ana.spot)) > 18).map(t => html`
+      <text key=${"p" + t} x=${x(t)} y=${y0 + 4} text-anchor="middle" font-size="11"
+            font-family=${font} fill="#8b97a8">${fmt(t, step < 1 ? 2 : 0)}</text>`)}
+    <circle cx=${x(ana.spot)} cy=${y0} r=${3.5} fill="#dfe6ef" stroke="#0e1116" />
+
+    <!-- breakeven tags on the strip -->
+    ${ana.breakevens.map(b => html`
+      <g key=${"b" + b}>
+        <rect x=${x(b) - 24} y=${y0 - HALF - 16} width=${48} height=${14} rx=${3}
+              fill="#2b2413" stroke="#f5b94e" stroke-width="0.5" />
+        <text x=${x(b)} y=${y0 - HALF - 5.5} text-anchor="middle" font-size="10"
+              font-family=${font} fill="#f5b94e">${fmt(b, 2)}</text>
+      </g>`)}
+
+    <!-- lot flags -->
+    ${flags.map((f, i) => {
+      const yr = f.up ? y0 - HALF - 22 - FH - f.lvl * (FH + 4)
+                      : y0 + HALF + 22 + f.lvl * (FH + 4);
+      return html`<g key=${"f" + i}>
+        <line x1=${f.xx} x2=${f.xx} y1=${f.up ? yr + FH : y0 + HALF}
+              y2=${f.up ? y0 - HALF : yr} stroke="#4a5568" />
+        <rect x=${f.xx - FW/2} y=${yr} width=${FW} height=${FH} rx=${3}
+              fill="#1d242f" stroke="#3a4656" />
+        <rect x=${f.xx - FW/2} y=${yr} width=${3} height=${FH} fill="#ff5d73" />
+        <text x=${f.xx + 1.5} y=${yr + FH - 5} text-anchor="middle" font-size="11"
+              font-family=${font} fill="#dfe6ef">${f.label}</text>
+      </g>`;})}
+
+    <!-- bottom row: position theta -->
+    <text x=${6} y=${bottom + 18} fill="#8b97a8" font-size="11" font-family=${font}>θ THEO</text>
+    <text x=${props.width - 6} y=${bottom + 18} text-anchor="end" fill="#8b97a8" font-size="11" font-family=${font}>θ THEO</text>
+    ${thA.length ? rowTicks.map(t => html`
+      <text key=${"t" + t} x=${x(t)} y=${bottom + 18} text-anchor="middle" font-size="11"
+            font-family=${font} fill=${signColor(interp(gridXs, thA, t))}>
+        ${interp(gridXs, thA, t).toFixed(2)}</text>`) : null}
+  </g>`;
+}
+
+function ChartTip({ active, payload }) {
+  if (!active || !payload || !payload.length) return null;
+  const d = payload[0].payload;
+  const row = (k, v, c) => html`
+    <div style=${{display:'flex',justifyContent:'space-between',gap:'18px'}}>
+      <span style=${{color:'#8b97a8'}}>${k}</span><span style=${{color:c}}>${v}</span>
+    </div>`;
+  return html`
+    <div style=${{background:'#1d242fee',border:'1px solid #2a3341',borderRadius:'4px',
+                  padding:'8px 10px',font:'11px Consolas, monospace'}}>
+      ${row("PRICE", fmt(d.spot), "#dfe6ef")}
+      ${row("P/L EXP", fmt(d.exp), signColor(d.exp))}
+      ${row("P/L THEO", fmt(d.t0), signColor(d.t0))}
+      ${row("θ THEO", fmt(d.theta), "#c26bd4")}
+    </div>`;
+}
+
 function Analysis({ ana, stale }) {
   const data = useMemo(() => ana.grid.map((s, i) => ({
     spot: s, exp: ana.expiration_pl[i], t0: ana.t0_pl[i],
+    theta: (ana.theta || [])[i] ?? 0,
+    expPos: Math.max(ana.expiration_pl[i], 0),
+    expNeg: Math.min(ana.expiration_pl[i], 0),
   })), [ana]);
+  // symmetric Y domain so P/L zero sits exactly on the center price strip
+  const yMax = useMemo(() => {
+    let m = 1;
+    for (const d of data) m = Math.max(m, Math.abs(d.exp), Math.abs(d.t0));
+    return m * 1.2;
+  }, [data]);
   return html`
     <div>
       <div class="cards">
@@ -185,24 +320,21 @@ function Analysis({ ana, stale }) {
           <div class="v" style=${{fontSize:'14px'}}>${ana.breakevens.map(b=>fmt(b)).join(" / ")||"—"}</div></div>
       </div>
       <div id="chart">
-        <${ResponsiveContainer} width="100%" height=${420}>
-          <${ComposedChart} data=${data} margin=${{top:10,right:20,bottom:5,left:10}}>
-            <${CartesianGrid} stroke="#2a3341" strokeDasharray="3 3" />
-            <${XAxis} dataKey="spot" tickFormatter=${v=>fmt(v,0)} stroke="#8b97a8"
-                      type="number" domain=${["dataMin","dataMax"]} tickCount=${9} />
-            <${YAxis} tickFormatter=${v=>fmt(v,0)} stroke="#8b97a8" width=${70} />
-            <${Tooltip} contentStyle=${{background:"#1d242f",border:"1px solid #2a3341"}}
-              formatter=${(v,n)=>[money(v), n==="exp"?"At expiration":"T+0 (now)"]}
-              labelFormatter=${v=>"Spot "+fmt(v)} />
-            <${ReferenceLine} y=${0} stroke="#8b97a8" />
-            <${ReferenceLine} x=${ana.spot} stroke="#7aa5ff" strokeWidth=${1.5}
-              label=${{value:"spot", fill:"#7aa5ff", fontSize:11, position:"top"}} />
-            ${ana.breakevens.map(b => html`
-              <${ReferenceLine} key=${b} x=${b} stroke="#f5b94e" strokeDasharray="4 4" />`)}
-            <${Line} type="monotone" dataKey="exp" stroke="#dfe6ef" dot=${false}
-                     strokeWidth=${2} isAnimationActive=${false} name="exp" />
-            <${Line} type="monotone" dataKey="t0" stroke="#2dd4a7" dot=${false}
-                     strokeWidth=${2} strokeDasharray="6 3" isAnimationActive=${false} name="t0" />
+        <${ResponsiveContainer} width="100%" height=${480}>
+          <${ComposedChart} data=${data} margin=${{top:26,right:62,bottom:26,left:62}}>
+            <${XAxis} dataKey="spot" hide=${true} type="number"
+                      domain=${["dataMin","dataMax"]} />
+            <${YAxis} hide=${true} domain=${[-yMax, yMax]} />
+            <${Tooltip} content=${ChartTip} />
+            <${Area} type="monotone" dataKey="expPos" stroke="#3ddc97" strokeWidth=${1.5}
+                     fill="#1b4d3a" fillOpacity=${0.55} baseValue=${0}
+                     dot=${false} activeDot=${false} isAnimationActive=${false} />
+            <${Area} type="monotone" dataKey="expNeg" stroke="#e0455e" strokeWidth=${1.5}
+                     fill="#5c1e26" fillOpacity=${0.55} baseValue=${0}
+                     dot=${false} activeDot=${false} isAnimationActive=${false} />
+            <${Line} type="monotone" dataKey="t0" stroke="#f59e0b" dot=${false}
+                     strokeWidth=${2} isAnimationActive=${false} name="t0" />
+            <${Customized} component=${p => chartOverlay(p, ana)} />
           <//>
         <//>
       </div>

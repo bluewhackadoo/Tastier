@@ -64,7 +64,7 @@ async def positions(account_number: str) -> dict:
     return {"groups": group_by_underlying(legs)}
 
 
-@app.get("/api/analysis/{account_number}/{underlying}")
+@app.get("/api/analysis/{account_number}/{underlying:path}")
 async def analysis(account_number: str, underlying: str) -> dict:
     legs_raw = [l for l in _legs_cache.get(account_number, [])
                 if l["underlying"] == underlying]
