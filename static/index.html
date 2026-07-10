@@ -213,23 +213,48 @@ function App() {
   const [ana, setAna] = useState(null);
   const [quotes, setQuotes] = useState({});
   const [wsOn, setWsOn] = useState(false);
+  const [setupErr, setSetupErr] = useState(null);
   const anaTimer = useRef(null);
 
+  // retry until the backend answers, so a restart mid-load can't strand
+  // the page on "Checking setup…"
   useEffect(() => {
-    fetch("/api/setup/validate").then(r => r.json()).then(s => {
-      setSetup(s);
-      if (s.ok && s.accounts.length) setAccount(s.accounts[0].account_number);
-    });
+    let alive = true;
+    const check = async () => {
+      try {
+        const ctl = new AbortController();
+        const t = setTimeout(() => ctl.abort(), 10000);
+        const r = await fetch("/api/setup/validate", { signal: ctl.signal });
+        clearTimeout(t);
+        const s = await r.json();
+        if (!alive) return;
+        setSetupErr(null);
+        setSetup(s);
+        if (s.ok && s.accounts.length) setAccount(s.accounts[0].account_number);
+      } catch (e) {
+        if (!alive) return;
+        setSetupErr(e.name === "AbortError" ? "timed out after 10s" : (e.message || String(e)));
+        setTimeout(check, 2000);
+      }
+    };
+    check();
+    return () => { alive = false; };
   }, []);
 
   useEffect(() => {
     if (!account) return;
-    fetch(`/api/positions/${account}`).then(r => r.json())
+    let alive = true;
+    const load = () => fetch(`/api/positions/${account}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(d => {
+        if (!alive) return;
         setGroups(d.groups);
         const keys = Object.keys(d.groups);
-        if (keys.length && !sel) setSel(keys[0]);
-      });
+        if (keys.length) setSel(s => s ?? keys[0]);
+      })
+      .catch(() => { if (alive) setTimeout(load, 3000); });
+    load();
+    return () => { alive = false; };
   }, [account]);
 
   // websocket quotes
@@ -260,13 +285,16 @@ function App() {
   useEffect(() => {
     if (!account || !sel) return;
     const load = () => fetch(`/api/analysis/${account}/${sel}`)
-      .then(r => r.ok ? r.json() : null).then(d => d && setAna(d));
+      .then(r => r.ok ? r.json() : null).then(d => d && setAna(d))
+      .catch(() => {});  // poll again on the next interval
     load();
     anaTimer.current = setInterval(load, 3000);
     return () => clearInterval(anaTimer.current);
   }, [account, sel]);
 
-  if (!setup) return html`<div class="empty">Checking setup…</div>`;
+  if (!setup) return html`<div class="empty">Checking setup…
+    ${setupErr ? html`<div class="prob" style=${{marginTop:'10px'}}>
+      backend not responding (${setupErr}) — retrying…</div>` : ''}</div>`;
   if (!setup.ok) return html`<${SetupHelp} setup=${setup} />`;
 
   const spotQ = quotes[sel] || {};
