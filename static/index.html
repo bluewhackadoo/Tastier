@@ -72,7 +72,9 @@
   .scell .v { font: 600 13px var(--mono); padding-top: 3px; overflow-wrap: break-word; }
   .candlebox { flex: 1 1 50%; min-width: 0; position: relative;
                background: var(--panel); border: 1px solid var(--line);
-               border-radius: 8px; min-height: 120px; overflow: hidden; }
+               border-radius: 8px; min-height: 120px; overflow: hidden;
+               cursor: grab; }
+  .candlebox:active { cursor: grabbing; }
   .candlebox svg { display: block; width: 100%; height: 120px; }
   .cinfo { position: absolute; top: 6px; left: 10px; font: 11px var(--mono);
            color: var(--dim); }
@@ -142,8 +144,27 @@ const niceStep = raw => {
   return 10 * p;
 };
 
-// intermediate-expiration curve palette, nearest date first
-const CURVE_COLORS = ["#e879b0", "#8ab4ff", "#c084fc", "#f0d264"];
+// linear hex blend, t in [0,1]
+const _hx = (a, b, t) => {
+  const p = s => [1, 3, 5].map(i => parseInt(s.slice(i, i + 2), 16));
+  const A = p(a), B = p(b);
+  return "#" + A.map((v, i) =>
+    Math.round(v + (B[i] - v) * t).toString(16).padStart(2, "0")).join("");
+};
+
+// chronological P/L-surface shades. i is the surface's index (0 = nearest
+// DTE), n the total count; expiration (the last surface) keeps the base
+// green/red, and nearer-dated curves get progressively lighter shades so
+// stacked expiries read chronologically.
+function surfaceShade(i, n) {
+  const t = n <= 1 ? 0 : ((n - 1) - i) / (n - 1);  // 0 at expiration
+  return {
+    posFill: _hx("#1b4d3a", "#43a074", t),
+    negFill: _hx("#5c1e26", "#ab5460", t),
+    posLine: _hx("#3ddc97", "#9bebc7", t),
+    negLine: _hx("#e0455e", "#f4a0ab", t),
+  };
+}
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const mmmdd = iso => {
@@ -392,7 +413,7 @@ function chartOverlay(props, ana) {
   const font = "Consolas, monospace";
   const FS = 13;                         // base font size for chart labels
 
-  const gridXs = ana.grid, expA = ana.expiration_pl, thA = ana.theta || [];
+  const gridXs = ana.grid, expA = ana.expiration_pl, t0A = ana.t0_pl || [];
   const [lo, hi] = x.domain();  // reflects the current zoom window
   const step = niceStep((hi - lo) / Math.max(4, Math.floor(width / 60)));
   const ticks = [];
@@ -401,14 +422,17 @@ function chartOverlay(props, ana) {
   // keep tick value labels clear of the corner row labels (now inside the plot)
   const rowTicks = ticks.filter(t => x(t) > left + 88 && x(t) < right - 88);
 
-  // chronological curve labels pinned to the right edge, de-overlapped
+  // chronological curve labels pinned to the right edge, de-overlapped;
+  // colors track the per-surface green shades so labels match their areas
   const hasOpts = (ana.legs || []).some(l => l.strike != null);
+  const nSurf = (ana.curves || []).length + 1;
   const seriesLabels = [
     { v: interp(gridXs, ana.t0_pl, hi), color: "#f59e0b", txt: "T+0" },
     ...(ana.curves || []).map((c, j) => ({
       v: interp(gridXs, c.pl, hi),
-      color: CURVE_COLORS[j % CURVE_COLORS.length], txt: c.dte_days + "d" })),
-    ...(hasOpts ? [{ v: interp(gridXs, expA, hi), color: "#8fd8a8",
+      color: surfaceShade(j, nSurf).posLine, txt: c.dte_days + "d" })),
+    ...(hasOpts ? [{ v: interp(gridXs, expA, hi),
+                     color: surfaceShade(nSurf - 1, nSurf).posLine,
                      txt: (ana.exp_dte ?? "") + "d exp" }] : []),
   ].map(s => ({ ...s, yy: Math.min(Math.max(y(s.v), top + 12), bottom - 6) }))
    .sort((a, b) => a.yy - b.yy);
@@ -417,7 +441,7 @@ function chartOverlay(props, ana) {
       seriesLabels[i].yy = seriesLabels[i - 1].yy + 15;
 
   // lot flags: long above the strip, short below; stagger when crowded
-  const FW = 48, FH = 20, GAP = 9;
+  const FW = 33, FH = 18, GAP = 9;
   const flags = (ana.legs || []).filter(l => l.strike != null && l.strike >= lo && l.strike <= hi)
     .map(l => ({ xx: x(l.strike), up: l.qty > 0, label: `${l.qty}${l.option_type}` }))
     .sort((a, b) => a.xx - b.xx);
@@ -477,17 +501,17 @@ function chartOverlay(props, ana) {
         <rect x=${f.xx - FW/2} y=${yr} width=${FW} height=${FH} rx=${3}
               fill="#1d242f" stroke="#3a4656" />
         <rect x=${f.xx - FW/2} y=${yr} width=${3} height=${FH} fill="#ff5d73" />
-        <text x=${f.xx + 1.5} y=${yr + FH - 6} text-anchor="middle" font-size=${FS}
+        <text x=${f.xx + 1.5} y=${yr + FH - 5} text-anchor="middle" font-size="12"
               font-family=${font} fill="#dfe6ef">${f.label}</text>
       </g>`;})}
 
-    <!-- bottom row: position theta -->
-    <text x=${left + 2} y=${bottom + 20} fill="#8b97a8" font-size=${FS} font-family=${font}>θ THEO</text>
-    <text x=${right - 2} y=${bottom + 20} text-anchor="end" fill="#8b97a8" font-size=${FS} font-family=${font}>θ THEO</text>
-    ${thA.length ? rowTicks.map(t => html`
+    <!-- bottom row: theoretical (T+0) P/L -->
+    <text x=${left + 2} y=${bottom + 20} fill="#8b97a8" font-size=${FS} font-family=${font}>P/L THEO</text>
+    <text x=${right - 2} y=${bottom + 20} text-anchor="end" fill="#8b97a8" font-size=${FS} font-family=${font}>P/L THEO</text>
+    ${t0A.length ? rowTicks.map(t => html`
       <text key=${"t" + t} x=${x(t)} y=${bottom + 20} text-anchor="middle" font-size=${FS}
-            font-family=${font} fill=${signColor(interp(gridXs, thA, t))}>
-        ${interp(gridXs, thA, t).toFixed(2)}</text>`) : null}
+            font-family=${font} fill=${signColor(interp(gridXs, t0A, t))}>
+        ${fmtK(interp(gridXs, t0A, t))}</text>`) : null}
 
     <!-- per-curve DTE labels at the right edge -->
     ${seriesLabels.map(s => html`
@@ -497,72 +521,22 @@ function chartOverlay(props, ana) {
   </g>`;
 }
 
-// tastytrade cash-index underlyings -> their TradingView symbols. Indices
-// need an exchange prefix; bare "SPX" resolves to the wrong instrument on
-// TradingView, so map them to the CBOE/index feeds explicitly.
-const TV_INDEX = {
-  SPX: "SP:SPX", SPXW: "SP:SPX", XSP: "CBOE:XSP",
-  NDX: "NASDAQ:NDX", NDXP: "NASDAQ:NDX", RUT: "CBOE:RUT",
-  VIX: "CBOE:VIX", VX: "CBOE:VIX", DJX: "TVC:DJI",
-};
-
-// map an underlying to a TradingView symbol; indices use their exchange
-// ticker, futures use the continuous front-month contract (/CLU6 -> CL1!),
-// equities pass through
-function tvSymbol(sel) {
-  if (!sel) return "";
-  if (sel.startsWith("/")) {
-    const m = sel.slice(1).match(/^([A-Z0-9]+?)([FGHJKMNQUVXZ]\d{1,2})?$/);
-    return (m ? m[1] : sel.slice(1)) + "1!";
-  }
-  return TV_INDEX[sel] || sel;
-}
-
-// TradingView advanced-chart embed (1m); falls back to the local DXLink
-// candle chart if the embed script can't load (e.g. offline)
-function TVTicker({ symbol, sel }) {
-  const boxRef = useRef(null);
-  const [failed, setFailed] = useState(false);
-  const tv = tvSymbol(sel);
-  useEffect(() => {
-    setFailed(false);
-    const box = boxRef.current;
-    if (!box || !tv) return;
-    box.innerHTML = "";
-    const wrap = document.createElement("div");
-    wrap.className = "tradingview-widget-container";
-    wrap.style.height = "100%";
-    const inner = document.createElement("div");
-    inner.className = "tradingview-widget-container__widget";
-    inner.style.height = "100%";
-    wrap.appendChild(inner);
-    const s = document.createElement("script");
-    s.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
-    s.async = true;
-    s.onerror = () => setFailed(true);
-    s.innerHTML = JSON.stringify({
-      symbol: tv, interval: "1", theme: "dark", style: "1", locale: "en",
-      autosize: true, hide_top_toolbar: true, hide_legend: true,
-      hide_side_toolbar: true, allow_symbol_change: false, save_image: false,
-      calendar: false, withdateranges: false,
-      backgroundColor: "#161b23", gridColor: "#2a3341",
-    });
-    wrap.appendChild(s);
-    box.appendChild(wrap);
-    return () => { box.innerHTML = ""; };
-  }, [tv, failed ? 1 : 0]);
-  if (failed) return html`<${CandleChart} symbol=${symbol} />`;
-  return html`<div class="candlebox" ref=${boxRef}></div>`;
-}
-
-// 1-minute mini candlestick chart for the selected group's spot symbol
-// (fallback when the TradingView embed is unreachable)
+// 1-minute mini candlestick chart for the selected group's spot symbol,
+// fed by the local DXLink candle relay (/api/candles). Supports wheel zoom
+// (centered on cursor), drag pan, and double-click reset — the view window
+// is {n visible bars, endOffset bars hidden past the right edge}.
+const CANDLE_DEFAULT_N = 75;
 function CandleChart({ symbol }) {
   const [cs, setCs] = useState(null);
+  const [view, setView] = useState(null);   // {n, endOffset} or null = default
+  const boxRef = useRef(null);
+  const viewRef = useRef(null); viewRef.current = view;
+  const csRef = useRef(null); csRef.current = cs;
+
   useEffect(() => {
     if (!symbol) return;
     let alive = true;
-    setCs(null);
+    setCs(null); setView(null);
     const load = () => fetch(`/api/candles/${encodeURIComponent(symbol)}`)
       .then(r => r.ok ? r.json() : [])
       .then(d => { if (alive) setCs(d); })
@@ -571,19 +545,69 @@ function CandleChart({ symbol }) {
     const t = setInterval(load, 15000);
     return () => { alive = false; clearInterval(t); };
   }, [symbol]);
-  if (!cs) return html`<div class="candlebox"><div class="candle-empty">loading candles…</div></div>`;
-  const bars = cs.slice(-75);
-  if (!bars.length) return html`<div class="candlebox"><div class="candle-empty">no intraday data</div></div>`;
+
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const total = () => (csRef.current || []).length;
+    const cur = () => viewRef.current
+      || { n: Math.min(CANDLE_DEFAULT_N, total() || CANDLE_DEFAULT_N), endOffset: 0 };
+    const onWheel = e => {
+      e.preventDefault();
+      const N = total(); if (!N) return;
+      const { n, endOffset } = cur();
+      const rightIdx = N - endOffset, startIdx = Math.max(0, rightIdx - n);
+      const r = el.getBoundingClientRect();
+      const f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+      const barUnder = startIdx + f * (rightIdx - startIdx);
+      let n2 = Math.round(n * (e.deltaY > 0 ? 1.25 : 0.8));
+      n2 = Math.max(10, Math.min(N, n2));
+      const eo = Math.max(0, Math.min(N - n2, N - (barUnder - f * n2 + n2)));
+      setView({ n: n2, endOffset: Math.round(eo) });
+    };
+    let drag = null;
+    const down = e => { if (e.button !== 0) return;
+      drag = { x: e.clientX, view: cur() }; e.preventDefault(); };
+    const move = e => {
+      if (!drag) return;
+      const N = total(); if (!N) return;
+      const r = el.getBoundingClientRect();
+      const { n, endOffset } = drag.view;
+      const dBars = (e.clientX - drag.x) / r.width * n;  // px -> bars, drag right = older
+      setView({ n, endOffset: Math.max(0, Math.min(N - n, Math.round(endOffset + dBars))) });
+    };
+    const up = () => { drag = null; };
+    const dbl = () => setView(null);
+    el.addEventListener("wheel", onWheel, { passive: false });
+    el.addEventListener("mousedown", down);
+    el.addEventListener("dblclick", dbl);
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("mousedown", down);
+      el.removeEventListener("dblclick", dbl);
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+  }, []);
+
+  if (!cs) return html`<div class="candlebox" ref=${boxRef}><div class="candle-empty">loading candles…</div></div>`;
+  if (!cs.length) return html`<div class="candlebox" ref=${boxRef}><div class="candle-empty">no intraday data</div></div>`;
+  const v = view || { n: Math.min(CANDLE_DEFAULT_N, cs.length), endOffset: 0 };
+  const rightIdx = cs.length - v.endOffset, startIdx = Math.max(0, rightIdx - v.n);
+  const bars = cs.slice(startIdx, rightIdx);
+  if (!bars.length) return html`<div class="candlebox" ref=${boxRef}><div class="candle-empty">no intraday data</div></div>`;
   const lo = Math.min(...bars.map(b => b.l)), hi = Math.max(...bars.map(b => b.h));
-  const H = 120, W = bars.length * 7, padY = 10;
+  const H = 120, bw = 7, W = bars.length * bw, padY = 10;
   const y = p => H - padY - (p - lo) / (hi - lo || 1) * (H - 2 * padY);
   const last = bars[bars.length - 1];
   const chg = (last.c - bars[0].o) / (bars[0].o || 1) * 100;
   return html`
-    <div class="candlebox">
+    <div class="candlebox" ref=${boxRef}>
       <svg viewBox=${`0 0 ${W} ${H}`} preserveAspectRatio="none">
         ${bars.map((b, i) => {
-          const cx = i * 7 + 3.5, up = b.c >= b.o, col = up ? "#2dd4a7" : "#ff5d73";
+          const cx = i * bw + bw / 2, up = b.c >= b.o, col = up ? "#2dd4a7" : "#ff5d73";
           return html`<g key=${b.t}>
             <line x1=${cx} x2=${cx} y1=${y(b.h)} y2=${y(b.l)} stroke=${col} />
             <rect x=${cx - 2.5} width="5" y=${y(Math.max(b.o, b.c))}
@@ -608,7 +632,7 @@ function ChartTip({ active, payload, curves }) {
       ${row("PRICE", fmt(d.spot), "#dfe6ef")}
       ${row("P/L THEO", fmt(d.t0), signColor(d.t0))}
       ${(curves || []).map((c, j) => row(`P/L ${c.dte_days}d`, fmt(d["c" + j]),
-          CURVE_COLORS[j % CURVE_COLORS.length]))}
+          signColor(d["c" + j])))}
       ${row("P/L EXP", fmt(d.exp), signColor(d.exp))}
       ${row("θ THEO", fmt(d.theta), "#c26bd4")}
     </div>`;
@@ -620,7 +644,11 @@ function Analysis({ ana, stale, sel }) {
     theta: (ana.theta || [])[i] ?? 0,
     expPos: Math.max(ana.expiration_pl[i], 0),
     expNeg: Math.min(ana.expiration_pl[i], 0),
-    ...Object.fromEntries((ana.curves || []).map((c, j) => ["c" + j, c.pl[i]])),
+    ...Object.fromEntries((ana.curves || []).flatMap((c, j) => [
+      ["c" + j, c.pl[i]],
+      ["cPos" + j, Math.max(c.pl[i], 0)],
+      ["cNeg" + j, Math.min(c.pl[i], 0)],
+    ])),
   })), [ana]);
   // symmetric Y domain so P/L zero sits exactly on the center price strip
   const yMax = useMemo(() => {
@@ -630,6 +658,16 @@ function Analysis({ ana, stale, sel }) {
       for (const v of c.pl) m = Math.max(m, Math.abs(v));
     return m * 1.2;
   }, [data]);
+  // chronological P/L surfaces: intermediate curves (nearest first) then
+  // the final expiration, each with its own green/red shade
+  const surfaces = useMemo(() => {
+    const list = [
+      ...(ana.curves || []).map((c, j) =>
+        ({ posKey: "cPos" + j, negKey: "cNeg" + j, label: c.dte_days + "d" })),
+      { posKey: "expPos", negKey: "expNeg", label: (ana.exp_dte ?? "") + "d exp" },
+    ];
+    return list.map((s, i) => ({ ...s, sh: surfaceShade(i, list.length) }));
+  }, [ana]);
 
   // x-axis zoom (wheel, centered on cursor) and pan (drag); dblclick resets
   const [view, setView] = useState(null);           // [lo, hi] or null = full
@@ -704,7 +742,7 @@ function Analysis({ ana, stale, sel }) {
           ${cell("Max Loss", sv(-1, money(ana.max_loss)))}
           ${cell("Breakevens", ana.breakevens.map(b => fmt(b)).join(" / ") || "—")}
         </div>
-        <${TVTicker} symbol=${candleSym} sel=${sel} />
+        <${CandleChart} symbol=${candleSym} />
       </div>
       <div id="chart" ref=${chartRef}>
         <${ResponsiveContainer} width="100%" height=${480}>
@@ -714,17 +752,17 @@ function Analysis({ ana, stale, sel }) {
                       domain=${view ?? ["dataMin", "dataMax"]} />
             <${YAxis} hide=${true} domain=${[-yMax, yMax]} />
             <${Tooltip} content=${p => html`<${ChartTip} ...${p} curves=${ana.curves} />`} />
-            <${Area} type="monotone" dataKey="expPos" stroke="#3ddc97" strokeWidth=${1.5}
-                     fill="#1b4d3a" fillOpacity=${0.55} baseValue=${0}
-                     dot=${false} activeDot=${false} isAnimationActive=${false} />
-            <${Area} type="monotone" dataKey="expNeg" stroke="#e0455e" strokeWidth=${1.5}
-                     fill="#5c1e26" fillOpacity=${0.55} baseValue=${0}
-                     dot=${false} activeDot=${false} isAnimationActive=${false} />
-            ${(ana.curves || []).map((c, j) => html`
-              <${Line} key=${"c" + j} type="monotone" dataKey=${"c" + j}
-                       stroke=${CURVE_COLORS[j % CURVE_COLORS.length]} dot=${false}
-                       strokeWidth=${1.5} isAnimationActive=${false}
-                       name=${c.dte_days + "d"} />`)}
+            ${[...surfaces].reverse().map(s => html`
+              <${React.Fragment} key=${s.posKey}>
+                <${Area} type="monotone" dataKey=${s.posKey} stroke=${s.sh.posLine}
+                         strokeWidth=${1.5} fill=${s.sh.posFill} fillOpacity=${0.5}
+                         baseValue=${0} dot=${false} activeDot=${false}
+                         isAnimationActive=${false} />
+                <${Area} type="monotone" dataKey=${s.negKey} stroke=${s.sh.negLine}
+                         strokeWidth=${1.5} fill=${s.sh.negFill} fillOpacity=${0.5}
+                         baseValue=${0} dot=${false} activeDot=${false}
+                         isAnimationActive=${false} />
+              <//>`)}
             <${Line} type="monotone" dataKey="t0" stroke="#f59e0b" dot=${false}
                      strokeWidth=${2} isAnimationActive=${false} name="t0" />
             <${Customized} component=${p => chartOverlay(p, ana)} />
