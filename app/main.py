@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from functools import reduce
+from math import gcd
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -11,13 +13,18 @@ from fastapi.responses import FileResponse
 from . import payoff
 from .config import settings
 from .streamer import relay
-from .tasty import fetch_positions, group_by_underlying, list_accounts
+from .tasty import (fetch_positions, fetch_roll_basis, group_by_underlying,
+                    list_accounts)
 
 app = FastAPI(title="Tastier Live Analysis", docs_url=None, redoc_url=None)
 STATIC = Path(__file__).resolve().parent.parent / "static"
 
 # in-memory cache of last-fetched legs per account (source of truth = tasty)
 _legs_cache: dict[str, list[dict]] = {}
+# per-account, per-underlying roll basis from transaction history; fetched
+# lazily on first analysis (never on the 3s poll) since it doesn't change
+# intraday for a read-only viewer
+_roll_cache: dict[str, dict[str, dict]] = {}
 
 
 @app.get("/")
@@ -93,6 +100,7 @@ async def analysis(account_number: str, underlying: str) -> dict:
     result = payoff.analysis(legs, float(spot))
     result["legs"] = legs_raw
     result["leg_stats"] = _leg_stats(legs_raw, float(spot))
+    result["roll_basis"] = await _roll_basis(account_number, underlying, legs_raw)
     # day P/L for this underlying: mark move off prior close plus anything
     # realized today on legs still open (fully-closed legs aren't visible
     # on a positions-only read)
@@ -103,6 +111,42 @@ async def analysis(account_number: str, underlying: str) -> dict:
         pl_day += l.get("realized_day", 0.0)
     result["pl_day"] = round(pl_day, 2) or 0.0
     return result
+
+
+async def _roll_basis(account_number: str, underlying: str,
+                      legs_raw: list[dict]) -> dict:
+    """Per-expiration roll-adjusted trade price + roll count for this
+    underlying, keyed by the leg expiration ISO date. Empty for
+    futures/equity or when no transaction history matches."""
+    acct = _roll_cache.setdefault(account_number, {})
+    if underlying not in acct:
+        if underlying.startswith("/"):  # futures options: skip (symbol fmt differs)
+            acct[underlying] = {}
+        else:
+            try:
+                acct[underlying] = await fetch_roll_basis(account_number, underlying)
+            except Exception:
+                acct[underlying] = {}
+    roll = acct[underlying]
+
+    by_exp: dict[str, list[dict]] = {}
+    for l in legs_raw:
+        if l["strike"] is not None and l["expiration"]:
+            by_exp.setdefault(l["expiration"], []).append(l)
+
+    out: dict[str, dict] = {}
+    for exp_iso, gl in by_exp.items():
+        yymmdd = exp_iso[2:4] + exp_iso[5:7] + exp_iso[8:10]  # 2026-10-16 -> 261016
+        r = roll.get(yymmdd)
+        if not r:
+            continue
+        units = reduce(gcd, [abs(round(l["qty"])) for l in gl]) or 1
+        mult = gl[0]["multiplier"] or 100
+        out[exp_iso] = {
+            "trd_prc": round(r["credit"] / (units * mult), 2),
+            "rolls": r["rolls"],
+        }
+    return out
 
 
 def _leg_stats(legs_raw: list[dict], spot: float) -> list[dict]:

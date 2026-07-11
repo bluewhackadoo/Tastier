@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import re
 from decimal import Decimal
 from typing import Any
 
@@ -18,6 +19,9 @@ from tastytrade.instruments import Future, FutureOption, Option
 from .config import settings
 
 _session: Session | None = None
+
+# OCC option symbol -> expiration YYMMDD (e.g. "NVDA  261016P00175000")
+_OCC_EXP = re.compile(r"(\d{6})[PC]\d")
 
 
 async def get_session() -> Session:
@@ -137,3 +141,40 @@ def group_by_underlying(legs: list[dict]) -> dict[str, list[dict]]:
     for leg in legs:
         groups.setdefault(leg["underlying"], []).append(leg)
     return groups
+
+
+async def fetch_roll_basis(account_number: str, underlying: str) -> dict[str, dict]:
+    """Roll-adjusted cost basis for one equity-option underlying.
+
+    Returns {expiration_YYMMDD: {"credit": gross_premium, "rolls": n}} where
+    credit is the gross premium collected across the whole order chain for
+    that expiration and rolls counts orders that both open and close a
+    position (tastytrade's "w/ N rolls"). Dividing credit by the current
+    position's (units x multiplier) reproduces tastytrade's Avg Trd Pr.
+    """
+    session = await get_session()
+    account = await Account.get(session, account_number)
+    txns = await account.get_history(session, underlying_symbol=underlying,
+                                     per_page=250)
+    by_exp: dict[str, dict] = {}
+    orders: dict[tuple, dict] = {}  # (exp, order_id) -> {open, close}
+    for t in txns:
+        it = getattr(t, "instrument_type", None)
+        if it is None or "Option" not in str(it.value):
+            continue
+        m = _OCC_EXP.search(t.symbol or "")
+        if not m:
+            continue
+        exp = m.group(1)
+        rec = by_exp.setdefault(exp, {"credit": 0.0})
+        rec["credit"] += float(t.value or 0)
+        sub = str(t.transaction_sub_type or "")
+        o = orders.setdefault((exp, t.order_id), {"open": False, "close": False})
+        if "Open" in sub:
+            o["open"] = True
+        if "Close" in sub:
+            o["close"] = True
+    for exp, rec in by_exp.items():
+        rec["rolls"] = sum(1 for (e, _), o in orders.items()
+                           if e == exp and o["open"] and o["close"])
+    return by_exp

@@ -76,6 +76,10 @@
                         font-weight: 600; }
   table.pos tr.grp td { background: #1a212c; font-weight: 600; color: #dfe6ef;
                         padding-top: 5px; }
+  .rollbadge { display: inline-block; margin-left: 7px; font: 9px var(--mono);
+               font-weight: 400; color: var(--warn); background: #2b2413;
+               border: 1px solid #5a4a1e; border-radius: 3px; padding: 0 5px;
+               vertical-align: middle; letter-spacing: .02em; }
   .num.pos { color: var(--up); } .num.neg { color: var(--down); }
   .topbar { display: flex; gap: 16px; margin-bottom: 12px; align-items: stretch; }
   .sumgrid { flex: 1 1 50%; min-width: 0; display: grid; align-content: start;
@@ -794,15 +798,29 @@ function Analysis({ ana, stale, sel }) {
           <//>
         <//>
       </div>
-      ${ana.leg_stats ? html`<${PositionTable} stats=${ana.leg_stats} />` : null}
+      ${ana.leg_stats ? html`<${PositionTable} stats=${ana.leg_stats} rollBasis=${ana.roll_basis} />` : null}
     </div>`;
 }
 
-function PositionTable({ stats }) {
+function PositionTable({ stats, rollBasis }) {
   const num = (v, d=2) => html`<span class="num ${v>0?'pos':v<0?'neg':''}">${fmt(v,d)}</span>`;
   const clusters = clusterLegs(stats);
   const sum = (ls, k) => ls.reduce((a, s) => a + s[k], 0);
   const tot = k => sum(stats, k);
+  // how many option legs share each expiration, so a roll basis (which spans
+  // the whole expiration) is only applied to a cluster that IS that whole
+  // expiration — not to a same-expiry cluster split into sub-strategies
+  const expLegCount = {};
+  stats.forEach(s => { if (s.strike != null) expLegCount[s.expiration] = (expLegCount[s.expiration] || 0) + 1; });
+  // group Trd Prc: roll-adjusted (from transaction history) when this cluster
+  // is a full, rolled expiration; otherwise the current-legs per-unit price
+  const groupTrd = c => {
+    const exp = c.legs[0].expiration;
+    const rb = rollBasis && rollBasis[exp];
+    const isFullExp = c.legs.every(l => l.strike != null) && c.legs.length === expLegCount[exp];
+    if (rb && isFullExp && rb.rolls > 0) return { val: rb.trd_prc, rolls: rb.rolls };
+    return { val: grpPrice(c.legs, sTrd), rolls: 0 };
+  };
   // cash-flow signed per-contract prices, tastytrade-style: debits red (long
   // pays to open, so negative trd prc), credits green; mark is the signed
   // per-unit position value
@@ -826,8 +844,9 @@ function PositionTable({ stats }) {
         ${clusters.map(c => html`
           <${React.Fragment} key=${c.label + ":" + c.legs[0].symbol}>
             <tr class="grp">
-              <td>${c.label}</td>
-              <td>${num(grpPrice(c.legs, sTrd))}</td>
+              <td>${c.label}${(() => { const r = groupTrd(c).rolls;
+                return r > 0 ? html`<span class="rollbadge">w/ ${r} ${r > 1 ? 'rolls' : 'roll'}</span>` : ''; })()}</td>
+              <td>${num(groupTrd(c).val)}</td>
               <td>${num(grpPrice(c.legs, sMrk))}</td>
               <td>${c.legs[0].strike != null ? c.legs[0].dte_days + "d" : "—"}</td>
               <td>${fmt(sum(c.legs, "delta"))}</td>
