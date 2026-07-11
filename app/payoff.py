@@ -34,8 +34,9 @@ def bs_price(
     option_type: str,  # "C" or "P"
     r: float = 0.0,
 ) -> float:
-    """Black-Scholes European price. At t<=0 returns intrinsic."""
-    if t_years <= 0 or iv <= 0:
+    """Black-Scholes European price. At t<=0 (or non-positive spot, which
+    the log can't handle) returns intrinsic."""
+    if t_years <= 0 or iv <= 0 or spot <= 0:
         if option_type == "C":
             return max(spot - strike, 0.0)
         return max(strike - spot, 0.0)
@@ -55,8 +56,9 @@ def bs_delta(
     option_type: str,  # "C" or "P"
     r: float = 0.0,
 ) -> float:
-    """Black-Scholes delta. At/after expiration returns the step function."""
-    if t_years <= 0 or iv <= 0:
+    """Black-Scholes delta. At/after expiration (or non-positive spot)
+    returns the step function."""
+    if t_years <= 0 or iv <= 0 or spot <= 0:
         if option_type == "C":
             return 1.0 if spot > strike else 0.0
         return -1.0 if spot < strike else 0.0
@@ -74,7 +76,7 @@ def bs_theta(
     r: float = 0.0,
 ) -> float:
     """Black-Scholes theta per calendar day. Zero at/after expiration."""
-    if t_years <= 0 or iv <= 0:
+    if t_years <= 0 or iv <= 0 or spot <= 0:
         return 0.0
     sig_sqrt_t = iv * math.sqrt(t_years)
     d1 = (math.log(spot / strike) + (r + 0.5 * iv * iv) * t_years) / sig_sqrt_t
@@ -176,7 +178,11 @@ def spot_grid(center: float, legs: list[Leg], points: int = 121) -> list[float]:
         pad = max((hi - lo) * 0.40, center * 0.01, 1.0)
     else:
         pad = max(center * 0.05, 1.0)
-    lo, hi = lo - pad, hi + pad
+    # a price can't be <= 0; floor the low bound so wide-strike positions
+    # (e.g. a 100P against a 650C) don't push the grid negative and break the
+    # Black-Scholes log
+    lo = max(lo - pad, min(strikes) * 0.02 if strikes else 0.01, 0.01)
+    hi = hi + pad
     step = (hi - lo) / (points - 1)
     return [lo + i * step for i in range(points)]
 
@@ -215,15 +221,26 @@ def analysis(legs: list[Leg], spot: float) -> dict:
     cost = net_open_cost(legs)
     live_value = value_at(legs, spot, at_expiration=False)
 
-    # a line per intermediate expiration (chronological); the last/terminal
-    # expiration is the shaded expiration_pl above
-    dtes = sorted({round(l.dte_years * 365) for l in legs if l.strike is not None})
-    curves = [
-        {"dte_days": d,
-         "pl": [round(v, 2) for v in pl_curve_at(legs, grid, d / 365.0)]}
-        for d in dtes[:-1]
-    ]
-    exp_dte = dtes[-1] if dtes else 0
+    # Each shorter-dated expiration group's OWN intrinsic payoff — the
+    # original shape of that sub-position (e.g. the 14d jade lizard vs the
+    # 98d strangle) — returned as a `curve` and drawn as its own green shade.
+    # The terminal (longest-dated) group is embodied in the combined
+    # expiration_pl outer shape, so it isn't repeated here.
+    groups: dict[int, list[Leg]] = {}
+    for l in legs:
+        if l.strike is not None:
+            groups.setdefault(round(l.dte_years * 365), []).append(l)
+    gdtes = sorted(groups)
+    curves = []
+    for d in gdtes[:-1]:
+        gl = groups[d]
+        gcost = net_open_cost(gl)
+        curves.append({
+            "dte_days": d,
+            "pl": [round(value_at(gl, s, at_expiration=True) - gcost, 2)
+                   for s in grid],
+        })
+    exp_dte = gdtes[-1] if gdtes else 0
 
     return {
         "curves": curves,

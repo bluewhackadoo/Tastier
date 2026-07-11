@@ -166,9 +166,15 @@ const niceStep = raw => {
   return 10 * p;
 };
 
-// line colors for later-dated expiration curves (nearest is the shaded
-// primary; these are drawn as lines above it, furthest last)
-const CURVE_COLORS = ["#b98bff", "#8ab4ff", "#e6a5d4", "#f0d264"];
+// green shades for each earlier-dated position's expiration shape (nearest
+// first), nested over the terminal combined shape; profit region is filled,
+// losses read through the terminal's red — so DTE shapes stay "all green"
+const DTE_SHADES = [
+  { fill: "#4fb488", line: "#8fe8c0" },
+  { fill: "#7bbf4a", line: "#c4e89a" },
+  { fill: "#3f9db4", line: "#8fd8e6" },
+  { fill: "#b0a63f", line: "#e6dc9a" },
+];
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const mmmdd = iso => {
@@ -433,7 +439,7 @@ function chartOverlay(props, ana) {
     { v: interp(gridXs, ana.t0_pl, hi), color: "#f59e0b", txt: "T+0" },
     ...(ana.curves || []).map((c, j) => ({
       v: interp(gridXs, c.pl, hi),
-      color: CURVE_COLORS[j % CURVE_COLORS.length], txt: c.dte_days + "d" })),
+      color: DTE_SHADES[j % DTE_SHADES.length].line, txt: c.dte_days + "d" })),
     ...(hasOpts ? [{ v: interp(gridXs, expA, hi), color: "#8fd8a8",
                      txt: (ana.exp_dte ?? "") + "d exp" }] : []),
   ].map(s => ({ ...s, yy: Math.min(Math.max(y(s.v), top + 12), bottom - 6) }))
@@ -673,7 +679,10 @@ function Analysis({ ana, stale, sel }) {
     theta: (ana.theta || [])[i] ?? 0,
     expPos: Math.max(ana.expiration_pl[i], 0),
     expNeg: Math.min(ana.expiration_pl[i], 0),
-    ...Object.fromEntries((ana.curves || []).map((c, j) => ["c" + j, c.pl[i]])),
+    ...Object.fromEntries((ana.curves || []).flatMap((c, j) => [
+      ["c" + j, c.pl[i]],
+      ["cPos" + j, Math.max(c.pl[i], 0)],
+    ])),
   })), [ana]);
   // symmetric Y domain so P/L zero sits exactly on the center price strip
   const yMax = useMemo(() => {
@@ -774,9 +783,11 @@ function Analysis({ ana, stale, sel }) {
                      fill="#5c1e26" fillOpacity=${0.5} baseValue=${0}
                      dot=${false} activeDot=${false} isAnimationActive=${false} />
             ${(ana.curves || []).map((c, j) => html`
-              <${Line} key=${"c" + j} type="monotone" dataKey=${"c" + j}
-                       stroke=${CURVE_COLORS[j % CURVE_COLORS.length]} dot=${false}
-                       strokeWidth=${1.5} isAnimationActive=${false} name=${c.dte_days + "d"} />`)}
+              <${Area} key=${"c" + j} type="monotone" dataKey=${"cPos" + j}
+                       stroke=${DTE_SHADES[j % DTE_SHADES.length].line} strokeWidth=${1.5}
+                       fill=${DTE_SHADES[j % DTE_SHADES.length].fill} fillOpacity=${0.5}
+                       baseValue=${0} dot=${false} activeDot=${false}
+                       isAnimationActive=${false} name=${c.dte_days + "d"} />`)}
             <${Line} type="monotone" dataKey="t0" stroke="#f59e0b" dot=${false}
                      strokeWidth=${2} isAnimationActive=${false} name="t0" />
             <${Customized} component=${p => chartOverlay(p, ana)} />

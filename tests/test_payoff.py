@@ -27,6 +27,26 @@ def test_bs_expiration_is_intrinsic():
     assert bs_price(90, 100, 0.0, 0.5, "C") == 0.0
 
 
+def test_bs_non_positive_spot_is_intrinsic():
+    # a wide-strike grid can probe spot <= 0; log() must not blow up
+    assert bs_price(0.0, 100, 0.5, 0.3, "P") == 100.0
+    assert bs_price(-5.0, 100, 0.5, 0.3, "C") == 0.0
+
+
+def test_wide_strike_grid_stays_positive_and_analysis_survives():
+    # 100P against a 650C (DELL-like) — padding must not push the grid <= 0
+    legs = [
+        Leg(qty=-4, multiplier=100, open_price=1.4, strike=100, option_type="P",
+            dte_years=0.7, iv=0.5),
+        Leg(qty=-2, multiplier=100, open_price=2.0, strike=650, option_type="C",
+            dte_years=0.7, iv=0.4),
+    ]
+    grid = spot_grid(450, legs)
+    assert min(grid) > 0
+    result = analysis(legs, 450.0)  # must not raise math domain error
+    assert len(result["grid"]) == len(result["expiration_pl"]) > 50
+
+
 IC = [  # short iron condor: -1 95P +1 90P -1 105C +1 110C, net credit 1.80
     Leg(qty=-1, multiplier=100, open_price=2.00, strike=95, option_type="P", dte_years=0.1, iv=0.3),
     Leg(qty=+1, multiplier=100, open_price=1.00, strike=90, option_type="P", dte_years=0.1, iv=0.3),
