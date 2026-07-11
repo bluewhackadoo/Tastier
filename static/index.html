@@ -441,7 +441,7 @@ function chartOverlay(props, ana) {
       v: interp(gridXs, c.pl, hi),
       color: DTE_SHADES[j % DTE_SHADES.length].line, txt: c.dte_days + "d" })),
     ...(hasOpts ? [{ v: interp(gridXs, expA, hi), color: "#8fd8a8",
-                     txt: (ana.exp_dte ?? "") + "d exp" }] : []),
+                     txt: (ana.exp_dte ?? "") + "dte" }] : []),
   ].map(s => ({ ...s, yy: Math.min(Math.max(y(s.v), top + 12), bottom - 6) }))
    .sort((a, b) => a.yy - b.yy);
   for (let i = 1; i < seriesLabels.length; i++)
@@ -803,12 +803,19 @@ function PositionTable({ stats }) {
   const clusters = clusterLegs(stats);
   const sum = (ls, k) => ls.reduce((a, s) => a + s[k], 0);
   const tot = k => sum(stats, k);
-  // cash-flow signed per-unit prices, tastytrade-style: debits red (long
+  // cash-flow signed per-contract prices, tastytrade-style: debits red (long
   // pays to open, so negative trd prc), credits green; mark is the signed
   // per-unit position value
   const sTrd = s => (s.qty > 0 ? -1 : 1) * s.trd_prc;
   const sMrk = s => (s.qty > 0 ? 1 : -1) * s.mark;
   const sumBy = (ls, f) => ls.reduce((a, s) => a + f(s), 0);
+  // a group's net price must weight each leg by its contract count and
+  // normalize to one unit of the spread (÷ gcd of the quantities), so e.g.
+  // a +2/-4/+2 butterfly reports the per-1x credit, not the raw leg-price sum
+  const gcd2 = (a, b) => b ? gcd2(b, a % b) : a;
+  const unitDiv = ls => ls.reduce((g, s) => gcd2(g, Math.abs(Math.round(s.qty))), 0) || 1;
+  const grpPrice = (ls, f) =>
+    ls.reduce((a, s) => a + f(s) * Math.abs(Math.round(s.qty)), 0) / unitDiv(ls);
   return html`
     <table class="pos">
       <thead><tr>
@@ -820,8 +827,8 @@ function PositionTable({ stats }) {
           <${React.Fragment} key=${c.label + ":" + c.legs[0].symbol}>
             <tr class="grp">
               <td>${c.label}</td>
-              <td>${num(sumBy(c.legs, sTrd))}</td>
-              <td>${num(sumBy(c.legs, sMrk))}</td>
+              <td>${num(grpPrice(c.legs, sTrd))}</td>
+              <td>${num(grpPrice(c.legs, sMrk))}</td>
               <td>${c.legs[0].strike != null ? c.legs[0].dte_days + "d" : "—"}</td>
               <td>${fmt(sum(c.legs, "delta"))}</td>
               <td>${num(sum(c.legs, "theta"))}</td>
