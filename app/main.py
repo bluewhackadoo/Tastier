@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from functools import reduce
 from math import gcd
 from pathlib import Path
@@ -16,7 +17,15 @@ from .streamer import relay
 from .tasty import (fetch_positions, fetch_roll_basis, group_by_underlying,
                     list_accounts)
 
-app = FastAPI(title="Tastier Live Analysis", docs_url=None, redoc_url=None)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    await relay.stop()  # tear down the DXLink relay on shutdown
+
+
+app = FastAPI(title="Tastier Live Analysis", docs_url=None, redoc_url=None,
+              lifespan=lifespan)
 STATIC = Path(__file__).resolve().parent.parent / "static"
 
 # in-memory cache of last-fetched legs per account (source of truth = tasty)
@@ -210,8 +219,3 @@ async def ws_quotes(ws: WebSocket) -> None:
         pass
     finally:
         relay.clients.discard(ws)
-
-
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    await relay.stop()
