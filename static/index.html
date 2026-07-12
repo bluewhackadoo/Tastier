@@ -102,9 +102,14 @@
                background: var(--panel); border: 1px solid var(--line);
                border-radius: 8px; overflow: hidden; cursor: grab; }
   .candlebox:active { cursor: grabbing; }
-  .tvbox { flex: 1 1 0; min-width: 0;
+  .tvbox { flex: 1 1 0; min-width: 0; position: relative;
            background: var(--panel); border: 1px solid var(--line);
            border-radius: 8px; overflow: hidden; }
+  .tvwatermark { position: absolute; inset: 0; display: flex; align-items: center;
+                 justify-content: center; pointer-events: none; z-index: 2; }
+  .tvwatermark span { font: 700 clamp(32px,8cqw,96px) var(--mono); color: #ffffff0d;
+                      letter-spacing: .08em; text-transform: uppercase;
+                      user-select: none; white-space: nowrap; }
   .tvbox .tradingview-widget-container,
   .tvbox .tradingview-widget-container__widget { height: 100%; width: 100%; }
   .candlebox svg { display: block; width: 100%; height: 100%; }
@@ -652,7 +657,10 @@ function TVTicker({ symbol, sel }) {
     return () => { box.innerHTML = ""; };
   }, [tv]);
   if (failed) return html`<${CandleChart} symbol=${symbol} />`;
-  return html`<div class="tvbox" ref=${boxRef}></div>`;
+  return html`<div class="tvbox">
+    <div class="tvwatermark"><span>${tv}</span></div>
+    <div ref=${boxRef} style=${{position:"absolute",inset:0,zIndex:1}}></div>
+  </div>`;
 }
 
 // 1-minute mini candlestick chart for the selected group's spot symbol,
