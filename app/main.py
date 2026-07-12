@@ -8,14 +8,14 @@ from functools import reduce
 from math import gcd
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from . import payoff
 from .config import settings
 from .streamer import relay
-from .tasty import (fetch_positions, fetch_roll_basis, group_by_underlying,
-                    list_accounts)
+from .tasty import (fetch_logo, fetch_positions, fetch_roll_basis,
+                    group_by_underlying, list_accounts)
 
 
 @asynccontextmanager
@@ -26,7 +26,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Tastier Live Analysis", docs_url=None, redoc_url=None,
               lifespan=lifespan)
-STATIC = Path(__file__).resolve().parent.parent / "static"
+ROOT = Path(__file__).resolve().parent.parent
+STATIC = ROOT / "static"
+LOGO_DIR = ROOT / "logos"  # on-disk logo cache (gitignored)
 
 # in-memory cache of last-fetched legs per account (source of truth = tasty)
 _legs_cache: dict[str, list[dict]] = {}
@@ -110,6 +112,7 @@ async def analysis(account_number: str, underlying: str) -> dict:
     result["legs"] = legs_raw
     result["leg_stats"] = _leg_stats(legs_raw, float(spot))
     result["roll_basis"] = await _roll_basis(account_number, underlying, legs_raw)
+    result["description"] = legs_raw[0].get("underlying_desc", "") if legs_raw else ""
     # day P/L for this underlying: mark move off prior close plus anything
     # realized today on legs still open (fully-closed legs aren't visible
     # on a positions-only read)
@@ -190,6 +193,42 @@ def _leg_stats(legs_raw: list[dict], spot: float) -> list[dict]:
             "pl_open": r2(qm * (mark - l["open_price"])),
         })
     return out
+
+
+_logo_mem: dict[str, bytes | None] = {}  # symbol -> svg bytes, or None = no logo
+
+
+@app.get("/api/logo/{symbol}")
+async def logo(symbol: str) -> Response:
+    """TradingView company logo for a ticker, cached on disk + in memory so
+    each symbol is fetched from TradingView at most once."""
+    symbol = symbol.upper()
+    hit = "public, max-age=604800"
+    if symbol in _logo_mem:
+        data = _logo_mem[symbol]
+        if data is None:
+            raise HTTPException(404, "no logo")
+        return Response(data, media_type="image/svg+xml", headers={"Cache-Control": hit})
+
+    svg = LOGO_DIR / f"{symbol}.svg"
+    none = LOGO_DIR / f"{symbol}.none"
+    if svg.exists():
+        data = svg.read_bytes()
+        _logo_mem[symbol] = data
+        return Response(data, media_type="image/svg+xml", headers={"Cache-Control": hit})
+    if none.exists():
+        _logo_mem[symbol] = None
+        raise HTTPException(404, "no logo")
+
+    data = await fetch_logo(symbol)
+    LOGO_DIR.mkdir(exist_ok=True)
+    if data:
+        svg.write_bytes(data)
+        _logo_mem[symbol] = data
+        return Response(data, media_type="image/svg+xml", headers={"Cache-Control": hit})
+    none.write_text("")  # negative cache marker
+    _logo_mem[symbol] = None
+    raise HTTPException(404, "no logo")
 
 
 @app.get("/api/candles/{symbol:path}")

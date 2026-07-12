@@ -81,6 +81,12 @@
                border: 1px solid #5a4a1e; border-radius: 3px; padding: 0 5px;
                vertical-align: middle; letter-spacing: .02em; }
   .num.pos { color: var(--up); } .num.neg { color: var(--down); }
+  .syminfo { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .symlogo { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+             background: #fff; object-fit: contain; }
+  .symname { font: 600 16px var(--mono); color: var(--text); letter-spacing: .02em; }
+  .symdesc { font: 13px -apple-system, "Segoe UI", sans-serif; color: var(--dim);
+             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .topbar { display: flex; gap: 16px; margin-bottom: 12px; align-items: stretch; }
   .sumgrid { flex: 1 1 50%; min-width: 0; display: grid; align-content: start;
              grid-template-columns: repeat(4, minmax(80px, 1fr)); gap: 8px 14px; }
@@ -819,8 +825,15 @@ function Analysis({ ana, stale, sel }) {
   const sv = (v, txt) => html`<span class="num ${v>0?'pos':v<0?'neg':''}">${txt}</span>`;
   const cell = (k, v) => html`<div class="scell"><div class="k">${k}</div><div class="v">${v}</div></div>`;
   const candleSym = ana.legs?.[0]?.underlying_streamer || sel;
+  const logoSym = (sel || "").replace(/^\//, "");
   return html`
     <div>
+      <div class="syminfo">
+        ${logoSym ? html`<img class="symlogo" alt="" src=${`/api/logo/${encodeURIComponent(logoSym)}`}
+              onError=${e => { e.currentTarget.style.display = "none"; }} />` : ''}
+        <span class="symname">${sel}</span>
+        ${ana.description ? html`<span class="symdesc">${ana.description}</span>` : ''}
+      </div>
       <div class="topbar">
         <div class="sumgrid">
           ${cell("Live P/L", sv(ana.live_pl, money(ana.live_pl)))}

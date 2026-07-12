@@ -13,8 +13,9 @@ import re
 from decimal import Decimal
 from typing import Any
 
+import httpx
 from tastytrade import Account, Session
-from tastytrade.instruments import Future, FutureOption, Option
+from tastytrade.instruments import Equity, Future, FutureOption, Option
 
 from .config import settings
 
@@ -22,6 +23,54 @@ _session: Session | None = None
 
 # OCC option symbol -> expiration YYMMDD (e.g. "NVDA  261016P00175000")
 _OCC_EXP = re.compile(r"(\d{6})[PC]\d")
+
+# TradingView's public symbol-search + logo CDN (used by their own widgets)
+_TV_HEADERS = {"User-Agent": "Mozilla/5.0",
+               "Origin": "https://www.tradingview.com",
+               "Referer": "https://www.tradingview.com/"}
+
+
+async def fetch_descriptions(underlyings: list[str]) -> dict[str, str]:
+    """Company/instrument descriptions from tastytrade for equity underlyings."""
+    if not underlyings:
+        return {}
+    try:
+        session = await get_session()
+        eqs = await Equity.get(session, underlyings)
+        if not isinstance(eqs, list):
+            eqs = [eqs]
+        return {e.symbol: (e.description or "") for e in eqs}
+    except Exception:
+        return {}
+
+
+async def fetch_logo(symbol: str) -> bytes | None:
+    """Resolve a ticker to its TradingView logo SVG (equities). None if the
+    symbol has no logo or the lookup fails."""
+    async with httpx.AsyncClient(headers=_TV_HEADERS, timeout=10) as c:
+        try:
+            r = await c.get(
+                "https://symbol-search.tradingview.com/symbol_search/",
+                params={"text": symbol, "type": "stock", "lang": "en"})
+            data = r.json()
+        except Exception:
+            return None
+        items = data if isinstance(data, list) else []
+        # prefer an exact ticker match, else the first result carrying a logo
+        logoid = next((i.get("logoid") for i in items
+                       if (i.get("symbol") or "").upper() == symbol.upper()
+                       and i.get("logoid")), None)
+        if not logoid:
+            logoid = next((i.get("logoid") for i in items if i.get("logoid")), None)
+        if not logoid:
+            return None
+        try:
+            lr = await c.get(f"https://s3-symbol-logo.tradingview.com/{logoid}.svg")
+            if lr.status_code == 200 and "svg" in lr.headers.get("content-type", ""):
+                return lr.content
+        except Exception:
+            return None
+    return None
 
 
 async def get_session() -> Session:
@@ -124,6 +173,12 @@ async def fetch_positions(account_number: str) -> list[dict]:
                 leg["underlying_streamer"] = fut_streamer.get(
                     opt.underlying_symbol, opt.underlying_symbol)
         out.append(leg)
+
+    # attach tastytrade company/instrument descriptions per underlying
+    descs = await fetch_descriptions(
+        sorted({l["underlying"] for l in out if not l["underlying"].startswith("/")}))
+    for l in out:
+        l["underlying_desc"] = descs.get(l["underlying"], "")
     return out
 
 
