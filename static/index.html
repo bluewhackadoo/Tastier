@@ -93,6 +93,11 @@
                border-radius: 8px; min-height: 120px; overflow: hidden;
                cursor: grab; }
   .candlebox:active { cursor: grabbing; }
+  .tvbox { flex: 1 1 50%; min-width: 0; min-height: 160px;
+           background: var(--panel); border: 1px solid var(--line);
+           border-radius: 8px; overflow: hidden; }
+  .tvbox .tradingview-widget-container,
+  .tvbox .tradingview-widget-container__widget { height: 100%; width: 100%; }
   .candlebox svg { display: block; width: 100%; height: 120px; }
   .cinfo { position: absolute; top: 6px; left: 10px; font: 11px var(--mono);
            color: var(--dim); }
@@ -533,6 +538,62 @@ function chartOverlay(props, ana) {
   </g>`;
 }
 
+// Map an underlying to a TradingView symbol. Cash indices use freely
+// embeddable proxies — the licensed index feeds (e.g. SP:SPX) throw
+// "only available on TradingView" in third-party embeds, but the FOREX.com
+// CFD proxies (SPXUSD, etc.) render fine. Futures use the continuous
+// front-month contract; equities pass through.
+const TV_SYMBOL = {
+  SPX: "FOREXCOM:SPXUSD", SPXW: "FOREXCOM:SPXUSD", XSP: "FOREXCOM:SPXUSD",
+  NDX: "FOREXCOM:NSXUSD", NDXP: "FOREXCOM:NSXUSD", RUT: "FOREXCOM:US2000",
+  DJX: "FOREXCOM:DJI", VIX: "TVC:VIX", VX: "TVC:VIX",
+};
+function tvSymbol(sel) {
+  if (!sel) return "";
+  if (TV_SYMBOL[sel]) return TV_SYMBOL[sel];
+  if (sel.startsWith("/")) {
+    const m = sel.slice(1).match(/^([A-Z0-9]+?)([FGHJKMNQUVXZ]\d{1,2})?$/);
+    return (m ? m[1] : sel.slice(1)) + "1!";
+  }
+  return sel;
+}
+
+// TradingView advanced-chart embed (5m bars over 5 trading days, dark,
+// toolbars hidden) — matches the tradeclock.fyi ticker. Falls back to the
+// local DXLink candle chart if the embed script can't load (offline).
+function TVTicker({ symbol, sel }) {
+  const boxRef = useRef(null);
+  const [failed, setFailed] = useState(false);
+  const tv = tvSymbol(sel);
+  useEffect(() => {
+    setFailed(false);
+    const box = boxRef.current;
+    if (!box || !tv) return;
+    box.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.className = "tradingview-widget-container";
+    const inner = document.createElement("div");
+    inner.className = "tradingview-widget-container__widget";
+    wrap.appendChild(inner);
+    const s = document.createElement("script");
+    s.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+    s.async = true;
+    s.onerror = () => setFailed(true);
+    s.innerHTML = JSON.stringify({
+      symbol: tv, interval: "5", range: "5D", theme: "dark", style: "1",
+      locale: "en", autosize: true, hide_top_toolbar: true, hide_legend: true,
+      hide_side_toolbar: true, allow_symbol_change: false, save_image: false,
+      calendar: false, withdateranges: false,
+      backgroundColor: "#161b23", gridColor: "#2a3341",
+    });
+    wrap.appendChild(s);
+    box.appendChild(wrap);
+    return () => { box.innerHTML = ""; };
+  }, [tv]);
+  if (failed) return html`<${CandleChart} symbol=${symbol} />`;
+  return html`<div class="tvbox" ref=${boxRef}></div>`;
+}
+
 // 1-minute mini candlestick chart for the selected group's spot symbol,
 // fed by the local DXLink candle relay (/api/candles). Supports wheel zoom
 // (centered on cursor), drag pan, and double-click reset — the view window
@@ -770,7 +831,7 @@ function Analysis({ ana, stale, sel }) {
           ${cell("Max Loss", sv(-1, money(ana.max_loss)))}
           ${cell("Breakevens", ana.breakevens.map(b => fmt(b)).join(" / ") || "—")}
         </div>
-        <${CandleChart} symbol=${candleSym} />
+        <${TVTicker} symbol=${candleSym} sel=${sel} />
       </div>
       <div id="chart" ref=${chartRef}>
         <${ResponsiveContainer} width="100%" height=${480}>
