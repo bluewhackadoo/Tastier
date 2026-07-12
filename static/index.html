@@ -159,6 +159,13 @@ const html = htm.bind(createElement);
 const { ResponsiveContainer, ComposedChart, Line, Area, XAxis, YAxis,
         CartesianGrid, ReferenceLine, Tooltip, Customized } = Recharts;
 
+// Anchor every URL to the real origin. In some embedding contexts (e.g. an
+// about:srcdoc iframe) document.baseURI can't resolve a relative "/api/..."
+// path, so fetch() throws "Failed to parse URL"; an absolute origin avoids it.
+const ORIGIN = (location.origin && location.origin !== "null") ? location.origin : "";
+const api = p => ORIGIN + p;
+const wsUrl = p => (ORIGIN ? ORIGIN.replace(/^http/, "ws") : `ws://${location.host}`) + p;
+
 const fmt = (v, d=2) => v == null ? "—" :
   v.toLocaleString("en-US", {minimumFractionDigits:d, maximumFractionDigits:d});
 const money = v => (v < 0 ? "-$" : "$") + fmt(Math.abs(v));
@@ -317,7 +324,7 @@ function App() {
       try {
         const ctl = new AbortController();
         const t = setTimeout(() => ctl.abort(), 10000);
-        const r = await fetch("/api/setup/validate", { signal: ctl.signal });
+        const r = await fetch(api("/api/setup/validate"), { signal: ctl.signal });
         clearTimeout(t);
         const s = await r.json();
         if (!alive) return;
@@ -337,7 +344,7 @@ function App() {
   useEffect(() => {
     if (!account) return;
     let alive = true;
-    const load = () => fetch(`/api/positions/${account}`)
+    const load = () => fetch(api(`/api/positions/${account}`))
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(d => {
         if (!alive) return;
@@ -356,7 +363,7 @@ function App() {
     if (!account) return;
     let ws, alive = true, ping;
     const connect = () => {
-      ws = new WebSocket(`ws://${location.host}/ws/quotes`);
+      ws = new WebSocket(wsUrl("/ws/quotes"));
       ws.onopen = () => { setWsOn(true);
         ping = setInterval(() => ws.readyState === 1 && ws.send("ping"), 15000); };
       ws.onmessage = e => {
@@ -378,7 +385,7 @@ function App() {
   // refresh analysis when selection changes + every 3s (T+0 line uses live IV/spot)
   useEffect(() => {
     if (!account || !sel) return;
-    const load = () => fetch(`/api/analysis/${account}/${sel}`)
+    const load = () => fetch(api(`/api/analysis/${account}/${sel}`))
       .then(r => r.ok ? r.json() : null).then(d => d && setAna(d))
       .catch(() => {});  // poll again on the next interval
     load();
@@ -617,7 +624,7 @@ function CandleChart({ symbol }) {
     if (!symbol) return;
     let alive = true;
     setCs(null); setView(null);
-    const load = () => fetch(`/api/candles/${encodeURIComponent(symbol)}`)
+    const load = () => fetch(api(`/api/candles/${encodeURIComponent(symbol)}`))
       .then(r => r.ok ? r.json() : [])
       .then(d => { if (alive) setCs(d); })
       .catch(() => {});
@@ -829,7 +836,7 @@ function Analysis({ ana, stale, sel }) {
   return html`
     <div>
       <div class="syminfo">
-        ${logoSym ? html`<img class="symlogo" alt="" src=${`/api/logo/${encodeURIComponent(logoSym)}`}
+        ${logoSym ? html`<img class="symlogo" alt="" src=${api(`/api/logo/${encodeURIComponent(logoSym)}`)}
               onError=${e => { e.currentTarget.style.display = "none"; }} />` : ''}
         <span class="symname">${sel}</span>
         ${ana.description ? html`<span class="symdesc">${ana.description}</span>` : ''}
