@@ -108,11 +108,17 @@ async def positions(account_number: str) -> dict:
 
 
 @app.get("/api/analysis/{account_number}/{underlying:path}")
-async def analysis(account_number: str, underlying: str) -> dict:
+async def analysis(account_number: str, underlying: str, hide: str = "") -> dict:
+    """Payoff analysis. `hide` is a comma-separated list of leg symbols to
+    exclude from the chart/summary math (the UI's per-strategy toggles);
+    the table data (leg_stats, roll_basis) always covers every leg."""
     legs_raw = [l for l in _legs_cache.get(account_number, [])
                 if l["underlying"] == underlying]
     if not legs_raw:
         raise HTTPException(404, "no cached legs; call /api/positions first")
+
+    hidden = {s for s in hide.split(",") if s} if hide else set()
+    enabled = [l for l in legs_raw if l["symbol"] not in hidden]
 
     spot_symbol = legs_raw[0].get("underlying_streamer") or underlying
     q = relay.latest.get(spot_symbol, {}) or relay.latest.get(underlying, {})
@@ -123,7 +129,7 @@ async def analysis(account_number: str, underlying: str) -> dict:
         raise HTTPException(503, "no spot price yet; quote stream warming up")
 
     legs = []
-    for l in legs_raw:
+    for l in enabled:
         live = relay.latest.get(l["streamer_symbol"], {})
         legs.append(payoff.Leg(
             qty=l["qty"], multiplier=l["multiplier"], open_price=l["open_price"],
@@ -132,17 +138,19 @@ async def analysis(account_number: str, underlying: str) -> dict:
             symbol=l["symbol"], chain=l.get("chain"),
         ))
     result = payoff.analysis(legs, float(spot))
-    result["legs"] = legs_raw
-    result["leg_stats"] = _leg_stats(legs_raw, float(spot))
+    result["legs"] = enabled          # chart-facing: flags, curves context
+    stats_all = _leg_stats(legs_raw, float(spot))
+    result["leg_stats"] = stats_all   # table-facing: every leg, always
     result["roll_basis"] = await _roll_basis(account_number, underlying, legs_raw)
     result["description"] = legs_raw[0].get("underlying_desc", "") if legs_raw else ""
-    # day P/L for this underlying: mark move off prior close plus anything
+    # day P/L for the ENABLED legs: mark move off prior close plus anything
     # realized today on legs still open (fully-closed legs aren't visible
     # on a positions-only read)
+    mark_by_sym = {s["symbol"]: s["mark"] for s in stats_all}
     pl_day = 0.0
-    for l, s in zip(legs_raw, result["leg_stats"]):
+    for l in enabled:
         base = l.get("close_price") or l["open_price"]
-        pl_day += l["qty"] * l["multiplier"] * (s["mark"] - base)
+        pl_day += l["qty"] * l["multiplier"] * (mark_by_sym[l["symbol"]] - base)
         pl_day += l.get("realized_day", 0.0)
     result["pl_day"] = round(pl_day, 2) or 0.0
     return result

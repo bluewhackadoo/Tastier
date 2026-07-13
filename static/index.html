@@ -76,6 +76,11 @@
                         font-weight: 600; }
   table.pos tr.grp td { background: #1a212c; font-weight: 600; color: #dfe6ef;
                         padding-top: 5px; }
+  table.pos tr.grp { cursor: pointer; user-select: none; }
+  table.pos tr.grp:hover td { background: #232d3c; }
+  table.pos tr.off td { opacity: .38; }
+  .vis { display: inline-block; width: 14px; color: var(--accent); }
+  tr.off .vis { color: var(--dim); }
   .rollbadge { display: inline-block; margin-left: 7px; font: 9px var(--mono);
                font-weight: 400; color: var(--warn); background: #2b2413;
                border: 1px solid #5a4a1e; border-radius: 3px; padding: 0 5px;
@@ -378,7 +383,17 @@ function App() {
   const [quotes, setQuotes] = useState({});
   const [wsOn, setWsOn] = useState(false);
   const [setupErr, setSetupErr] = useState(null);
+  const [hiddenLegs, setHiddenLegs] = useState(new Set());  // per-strategy chart toggles
   const anaTimer = useRef(null);
+  const hideParam = [...hiddenLegs].sort().join(",");
+
+  // toggle a whole strategy cluster's legs in/out of the chart
+  const toggleCluster = syms => setHiddenLegs(h => {
+    const n = new Set(h);
+    const allHidden = syms.every(s => n.has(s));
+    syms.forEach(s => allHidden ? n.delete(s) : n.add(s));
+    return n;
+  });
 
   // retry until the backend answers, so a restart mid-load can't strand
   // the page on "Checking setup…"
@@ -446,16 +461,20 @@ function App() {
     return () => { alive = false; ws && ws.close(); clearInterval(ping); };
   }, [account]);
 
-  // refresh analysis when selection changes + every 3s (T+0 line uses live IV/spot)
+  // clear strategy toggles when switching underlyings
+  useEffect(() => setHiddenLegs(new Set()), [sel]);
+
+  // refresh analysis when selection/toggles change + every 3s (T+0 uses live IV/spot)
   useEffect(() => {
     if (!account || !sel) return;
-    const load = () => fetch(api(`/api/analysis/${account}/${sel}`))
+    const qs = hideParam ? `?hide=${encodeURIComponent(hideParam)}` : "";
+    const load = () => fetch(api(`/api/analysis/${account}/${sel}${qs}`))
       .then(r => r.ok ? r.json() : null).then(d => d && setAna(d))
       .catch(() => {});  // poll again on the next interval
     load();
     anaTimer.current = setInterval(load, 3000);
     return () => clearInterval(anaTimer.current);
-  }, [account, sel]);
+  }, [account, sel, hideParam]);
 
   if (!setup) return html`<div class="empty">Checking setup…
     ${setupErr ? html`<div class="prob" style=${{marginTop:'10px'}}>
@@ -493,7 +512,8 @@ function App() {
         ${!Object.keys(groups).length && html`<div class="empty">No open positions</div>`}
       </div>
       <div id="right">
-        ${ana ? html`<${Analysis} ana=${ana} stale=${stale} sel=${sel} />`
+        ${ana ? html`<${Analysis} ana=${ana} stale=${stale} sel=${sel}
+                       hidden=${hiddenLegs} onToggle=${toggleCluster} />`
               : html`<div class="empty">Select a position</div>`}
       </div>
     </main>`;
@@ -820,7 +840,7 @@ function ChartTip({ active, payload, curves }) {
     </div>`;
 }
 
-function Analysis({ ana, stale, sel }) {
+function Analysis({ ana, stale, sel, hidden, onToggle }) {
   const data = useMemo(() => ana.grid.map((s, i) => ({
     spot: s, exp: ana.expiration_pl[i], t0: ana.t0_pl[i],
     theta: (ana.theta || [])[i] ?? 0,
@@ -959,11 +979,13 @@ function Analysis({ ana, stale, sel }) {
         <//>
       </div>
       <div class="hdivider" onMouseDown=${dragChart}></div>
-      ${ana.leg_stats ? html`<${PositionTable} stats=${ana.leg_stats} rollBasis=${ana.roll_basis} />` : null}
+      ${ana.leg_stats ? html`<${PositionTable} stats=${ana.leg_stats} rollBasis=${ana.roll_basis}
+                              hidden=${hidden} onToggle=${onToggle} />` : null}
     </div>`;
 }
 
-function PositionTable({ stats, rollBasis }) {
+function PositionTable({ stats, rollBasis, hidden, onToggle }) {
+  const isOff = c => hidden && c.legs.every(l => hidden.has(l.symbol));
   const num = (v, d=2) => html`<span class="num ${v>0?'pos':v<0?'neg':''}">${fmt(v,d)}</span>`;
   const clusters = clusterLegs(stats);
   const sum = (ls, k) => ls.reduce((a, s) => a + s[k], 0);
@@ -1002,10 +1024,11 @@ function PositionTable({ stats, rollBasis }) {
         <th>IV</th><th>Cst</th><th>Ext</th><th>P/L Open</th>
       </tr></thead>
       <tbody>
-        ${clusters.map(c => html`
+        ${clusters.map(c => { const off = isOff(c); return html`
           <${React.Fragment} key=${c.label + ":" + c.legs[0].symbol}>
-            <tr class="grp">
-              <td>${c.label}${(() => { const r = groupTrd(c).rolls;
+            <tr class="grp ${off ? 'off' : ''}" title="click to toggle this strategy on the chart"
+                onClick=${() => onToggle && onToggle(c.legs.map(l => l.symbol))}>
+              <td><span class="vis">${off ? '○' : '●'}</span>${c.label}${(() => { const r = groupTrd(c).rolls;
                 return r > 0 ? html`<span class="rollbadge">w/ ${r} ${r > 1 ? 'rolls' : 'roll'}</span>` : ''; })()}</td>
               <td>${num(groupTrd(c).val)}</td>
               <td>${num(grpPrice(c.legs, sMrk))}</td>
@@ -1018,7 +1041,7 @@ function PositionTable({ stats, rollBasis }) {
               <td>${num(sum(c.legs, "pl_open"))}</td>
             </tr>
             ${c.legs.map(s => html`
-              <tr key=${s.symbol}>
+              <tr key=${s.symbol} class=${off ? 'off' : ''}>
                 <td><${LegPills} l=${s} /></td>
                 <td>${num(sTrd(s))}</td>
                 <td>${num(sMrk(s))}</td>
@@ -1030,7 +1053,7 @@ function PositionTable({ stats, rollBasis }) {
                 <td>${num(s.ext)}</td>
                 <td>${num(s.pl_open)}</td>
               </tr>`)}
-          <//>`)}
+          <//>`;})}
         <tr class="tot">
           <td>Σ</td><td></td><td></td><td></td>
           <td>${fmt(tot("delta"))}</td>
