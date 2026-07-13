@@ -953,6 +953,10 @@ function Analysis({ ana, stale, sel, hidden, onToggle }) {
       </div>
       <div class="hdivider" onMouseDown=${dragTopbar}></div>
       <div id="chart" ref=${chartRef} style=${{height: chartH + "px"}}>
+        ${!(ana.legs || []).length ? html`
+          <div class="candle-empty" style=${{height: "100%"}}>
+            all strategies hidden — click a group row below to show one
+          </div>` : html`
         <${ResponsiveContainer} width="100%" height="100%">
           <${ComposedChart} data=${data} margin=${{top:28,right:12,bottom:28,left:12}}>
             <${XAxis} dataKey="spot" hide=${true} type="number"
@@ -976,7 +980,7 @@ function Analysis({ ana, stale, sel, hidden, onToggle }) {
                      strokeWidth=${2} isAnimationActive=${false} name="t0" />
             <${Customized} component=${p => chartOverlay(p, ana)} />
           <//>
-        <//>
+        <//>`}
       </div>
       <div class="hdivider" onMouseDown=${dragChart}></div>
       ${ana.leg_stats ? html`<${PositionTable} stats=${ana.leg_stats} rollBasis=${ana.roll_basis}
