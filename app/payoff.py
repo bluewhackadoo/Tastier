@@ -190,6 +190,8 @@ def spot_grid(center: float, legs: list[Leg], points: int = 121) -> list[float]:
 
 def breakevens(spots: list[float], pl: list[float]) -> list[float]:
     """Zero crossings of the expiration P/L via linear interpolation."""
+    if not any(pl):  # an all-zero curve (e.g. no legs) crosses nowhere
+        return []
     out: list[float] = []
     for i in range(1, len(spots)):
         a, b = pl[i - 1], pl[i]
