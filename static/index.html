@@ -110,8 +110,9 @@
   .tvwatermark span { font: 700 clamp(32px,8cqw,96px) var(--mono); color: #ffffff0d;
                       letter-spacing: .08em; text-transform: uppercase;
                       user-select: none; white-space: nowrap; }
-  .tvbox .tradingview-widget-container,
-  .tvbox .tradingview-widget-container__widget { height: 100%; width: 100%; }
+  .tvbox .tradingview-widget-container { height: 100%; width: 100%; }
+  .tvbox .tradingview-widget-container__widget { width: 100%; height: calc(100% + 34px); }
+  .tvbox .tradingview-widget-container iframe { height: 100% !important; }
   .candlebox svg { display: block; width: 100%; height: 100%; }
   .cinfo { position: absolute; top: 6px; left: 10px; font: 11px var(--mono);
            color: var(--dim); }
@@ -331,8 +332,10 @@ function decompose(ls) {
   return [ls];
 }
 
-// equity legs first, then clusters per expiration labeled with the
-// detected strategy; shared by the left panel and the position table
+// equity legs first, then clusters per expiration labeled with the detected
+// strategy; shared by the left panel and the position table. When legs carry
+// order-chain ids (how they were actually traded) the split follows the
+// chains; otherwise same-expiry stacks fall back to shape decomposition.
 function clusterLegs(legs) {
   const clusters = [];
   const eq = legs.filter(l => l.strike == null);
@@ -341,10 +344,19 @@ function clusterLegs(legs) {
   const byExp = {};
   for (const l of legs) if (l.strike != null) (byExp[l.expiration] ??= []).push(l);
   for (const exp of Object.keys(byExp).sort()) {
-    const ls = byExp[exp].sort((a, b) =>
-      a.strike - b.strike || (a.option_type === "P" ? -1 : 1));
-    for (const sub of decompose(ls))
+    const dl = byExp[exp];
+    let subs;
+    if (dl.every(l => l.chain != null) && new Set(dl.map(l => l.chain)).size > 1) {
+      subs = [...new Set(dl.map(l => l.chain))].sort()
+        .map(c => dl.filter(l => l.chain === c));
+    } else {
+      subs = decompose(dl.sort((a, b) =>
+        a.strike - b.strike || (a.option_type === "P" ? -1 : 1)));
+    }
+    for (const sub of subs) {
+      sub.sort((a, b) => a.strike - b.strike || (a.option_type === "P" ? -1 : 1));
       clusters.push({ label: `${classify(sub)} · ${dteDays(sub[0])}d`, legs: sub });
+    }
   }
   return clusters;
 }
@@ -514,7 +526,8 @@ function chartOverlay(props, ana) {
     { v: interp(gridXs, ana.t0_pl, hi), color: "#f59e0b", txt: "T+0" },
     ...(ana.curves || []).map((c, j) => ({
       v: interp(gridXs, c.pl, hi),
-      color: DTE_SHADES[j % DTE_SHADES.length].line, txt: c.dte_days + "d" })),
+      color: DTE_SHADES[j % DTE_SHADES.length].line,
+      txt: c.label || (c.dte_days + "d") })),
     ...(hasOpts ? [{ v: interp(gridXs, expA, hi), color: "#8fd8a8",
                      txt: (ana.exp_dte ?? "") + "dte" }] : []),
   ].map(s => ({ ...s, yy: Math.min(Math.max(y(s.v), top + 12), bottom - 6) }))
@@ -800,7 +813,7 @@ function ChartTip({ active, payload, curves }) {
                   padding:'8px 10px',font:'13px Consolas, monospace'}}>
       ${row("PRICE", fmt(d.spot), "#dfe6ef")}
       ${row("P/L THEO", fmt(d.t0), signColor(d.t0))}
-      ${(curves || []).map((c, j) => row(`P/L ${c.dte_days}d`, fmt(d["c" + j]),
+      ${(curves || []).map((c, j) => row(`P/L ${c.label || c.dte_days + "d"}`, fmt(d["c" + j]),
           signColor(d["c" + j])))}
       ${row("P/L EXP", fmt(d.exp), signColor(d.exp))}
       ${row("θ THEO", fmt(d.theta), "#c26bd4")}

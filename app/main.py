@@ -14,8 +14,8 @@ from fastapi.responses import FileResponse
 from . import payoff
 from .config import settings
 from .streamer import relay
-from .tasty import (fetch_logo, fetch_positions, fetch_roll_basis,
-                    group_by_underlying, list_accounts)
+from .tasty import (fetch_logo, fetch_order_chains, fetch_positions,
+                    fetch_roll_basis, group_by_underlying, list_accounts)
 
 
 @asynccontextmanager
@@ -36,6 +36,18 @@ _legs_cache: dict[str, list[dict]] = {}
 # lazily on first analysis (never on the 3s poll) since it doesn't change
 # intraday for a read-only viewer
 _roll_cache: dict[str, dict[str, dict]] = {}
+# per-(account, underlying) order-chain map {symbol: chain_id}
+_chain_cache: dict[tuple[str, str], dict[str, int]] = {}
+
+
+async def _order_chains(account_number: str, underlying: str) -> dict[str, int]:
+    key = (account_number, underlying)
+    if key not in _chain_cache:
+        try:
+            _chain_cache[key] = await fetch_order_chains(account_number, underlying)
+        except Exception:
+            _chain_cache[key] = {}
+    return _chain_cache[key]
 
 
 @app.get("/")
@@ -77,6 +89,17 @@ async def positions(account_number: str) -> dict:
         legs = await fetch_positions(account_number)
     except Exception as exc:
         raise HTTPException(502, f"positions fetch failed: {exc}")
+    # attach order-chain ids so same-expiry strategies opened separately
+    # stay separate in the UI (cached; one history call per underlying)
+    underlyings = sorted({l["underlying"] for l in legs})
+    chain_maps = await asyncio.gather(
+        *(_order_chains(account_number, u) for u in underlyings))
+    merged: dict[str, int] = {}
+    for m in chain_maps:
+        merged.update(m)
+    for l in legs:
+        l["chain"] = merged.get(l["symbol"])
+
     _legs_cache[account_number] = legs
     symbols = {l["streamer_symbol"] for l in legs} | {
         l.get("underlying_streamer") or l["underlying"] for l in legs}
@@ -106,7 +129,7 @@ async def analysis(account_number: str, underlying: str) -> dict:
             qty=l["qty"], multiplier=l["multiplier"], open_price=l["open_price"],
             strike=l["strike"], option_type=l["option_type"],
             dte_years=l["dte_years"], iv=live.get("iv", 0.0) or 0.20,
-            symbol=l["symbol"],
+            symbol=l["symbol"], chain=l.get("chain"),
         ))
     result = payoff.analysis(legs, float(spot))
     result["legs"] = legs_raw
@@ -182,6 +205,7 @@ def _leg_stats(legs_raw: list[dict], spot: float) -> list[dict]:
         out.append({
             "symbol": l["symbol"], "qty": l["qty"], "strike": l["strike"],
             "option_type": l["option_type"], "expiration": l["expiration"],
+            "chain": l.get("chain"),
             "dte_days": round(l["dte_years"] * 365),
             "trd_prc": l["open_price"], "mark": r2(mark),
             "iv": iv,

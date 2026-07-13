@@ -11,7 +11,7 @@ from app.main import app, _legs_cache
 from app.streamer import relay
 
 FIXTURE = json.loads(
-    (Path(__file__).parent.parent / "fixtures/positions_iron_condor.json").read_text()
+    (Path(__file__).parent / "positions_iron_condor.json").read_text()
 )
 
 

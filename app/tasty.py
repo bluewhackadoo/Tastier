@@ -198,6 +198,49 @@ def group_by_underlying(legs: list[dict]) -> dict[str, list[dict]]:
     return groups
 
 
+async def fetch_order_chains(account_number: str, underlying: str) -> dict[str, int]:
+    """Group option symbols into order chains from transaction history.
+
+    Two symbols belong to the same chain if they ever traded together in one
+    order (union-find over per-order symbol sets). This recovers how the
+    positions were actually built — e.g. a put vertical and a call vertical
+    opened separately stay separate chains even when their legs share an
+    expiration and would otherwise pattern-match an iron condor.
+    Returns {option_symbol: chain_id}.
+    """
+    session = await get_session()
+    account = await Account.get(session, account_number)
+    txns = await account.get_history(session, underlying_symbol=underlying,
+                                     per_page=250)
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        parent[find(a)] = find(b)
+
+    orders: dict[Any, list[str]] = {}
+    for t in txns:
+        it = getattr(t, "instrument_type", None)
+        if it is None or "Option" not in str(it.value) or not t.symbol:
+            continue
+        orders.setdefault(t.order_id, []).append(t.symbol)
+    for syms in orders.values():
+        for s in syms[1:]:
+            union(syms[0], s)
+
+    roots: dict[str, int] = {}
+    out: dict[str, int] = {}
+    for s in parent:
+        r = find(s)
+        out[s] = roots.setdefault(r, len(roots))
+    return out
+
+
 async def fetch_roll_basis(account_number: str, underlying: str) -> dict[str, dict]:
     """Roll-adjusted cost basis for one equity-option underlying.
 

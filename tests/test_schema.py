@@ -6,7 +6,7 @@ from pathlib import Path
 from app.tasty import group_by_underlying
 
 FIXTURE = json.loads(
-    (Path(__file__).parent.parent / "fixtures/positions_iron_condor.json").read_text()
+    (Path(__file__).parent / "positions_iron_condor.json").read_text()
 )
 
 REQUIRED = {"symbol", "underlying", "instrument_type", "qty", "multiplier",

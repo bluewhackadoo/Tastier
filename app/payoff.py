@@ -100,6 +100,7 @@ class Leg:
     dte_years: float = 0.0     # time to expiration in years
     iv: float = 0.0            # live implied vol (from Greeks stream)
     symbol: str = ""
+    chain: int | None = None   # order-chain id (legs traded together)
 
 
 def net_open_cost(legs: list[Leg]) -> float:
@@ -221,26 +222,45 @@ def analysis(legs: list[Leg], spot: float) -> dict:
     cost = net_open_cost(legs)
     live_value = value_at(legs, spot, at_expiration=False)
 
-    # Each shorter-dated expiration group's OWN intrinsic payoff — the
-    # original shape of that sub-position (e.g. the 14d jade lizard vs the
-    # 98d strangle) — returned as a `curve` and drawn as its own green shade.
-    # The terminal (longest-dated) group is embodied in the combined
-    # expiration_pl outer shape, so it isn't repeated here.
-    groups: dict[int, list[Leg]] = {}
+    # Each sub-position's OWN intrinsic payoff — grouped by expiration AND
+    # order chain (how the legs were actually traded), so e.g. a put vertical
+    # and a call vertical opened separately on the same expiry stay two
+    # shapes. Returned as `curves`, each drawn as its own green shade. When
+    # the terminal expiration holds a single group it is embodied in the
+    # combined expiration_pl outer shape and not repeated.
+    by_dte: dict[int, list[Leg]] = {}
     for l in legs:
         if l.strike is not None:
-            groups.setdefault(round(l.dte_years * 365), []).append(l)
-    gdtes = sorted(groups)
+            by_dte.setdefault(round(l.dte_years * 365), []).append(l)
+    groups: list[tuple[int, list[Leg]]] = []
+    for d in sorted(by_dte):
+        dl = by_dte[d]
+        # split by chain only when every leg of this expiry is chain-tagged
+        if all(l.chain is not None for l in dl) and len({l.chain for l in dl}) > 1:
+            for c in sorted({l.chain for l in dl}):
+                groups.append((d, [l for l in dl if l.chain == c]))
+        else:
+            groups.append((d, dl))
+    term_d = groups[-1][0] if groups else 0
+    n_term = sum(1 for d, _ in groups if d == term_d)
     curves = []
-    for d in gdtes[:-1]:
-        gl = groups[d]
+    for d, gl in groups:
+        if d == term_d and n_term == 1:
+            continue  # the combined outer shape already IS this group
         gcost = net_open_cost(gl)
+        if sum(1 for dd, _ in groups if dd == d) > 1:
+            lo_s = min(l.strike for l in gl)
+            hi_s = max(l.strike for l in gl)
+            label = f"{lo_s:g}/{hi_s:g}" if lo_s != hi_s else f"{lo_s:g}"
+        else:
+            label = f"{d}d"
         curves.append({
             "dte_days": d,
+            "label": label,
             "pl": [round(value_at(gl, s, at_expiration=True) - gcost, 2)
                    for s in grid],
         })
-    exp_dte = gdtes[-1] if gdtes else 0
+    exp_dte = term_d
 
     return {
         "curves": curves,
