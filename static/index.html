@@ -189,7 +189,7 @@
 <script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
 <script crossorigin src="https://unpkg.com/htm@3.1.1/dist/htm.js"></script>
 <script>
-const { useState, useEffect, useRef, useMemo, createElement } = React;
+const { useState, useEffect, useRef, useMemo, useCallback, createElement } = React;
 const html = htm.bind(createElement);
 const { ResponsiveContainer, ComposedChart, Line, Area, XAxis, YAxis,
         CartesianGrid, ReferenceLine, Tooltip, Customized } = Recharts;
@@ -433,13 +433,32 @@ function App() {
   const anaTimer = useRef(null);
   const hideParam = [...hiddenLegs].sort().join(",");
 
+  // fetch positions; on initial load also pick a default selection
+  const loadPositions = useCallback((preserveSel = true) => {
+    if (!account) return;
+    fetch(api(`/api/positions/${account}`))
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(d => {
+        setGroups(d.groups);
+        if (!preserveSel) {
+          const keys = Object.keys(d.groups);
+          const saved = localStorage.getItem("tastier.sel");
+          if (keys.length) setSel(s => s ?? (saved && d.groups[saved] ? saved : keys[0]));
+        }
+      })
+      .catch(() => {});
+  }, [account]);
+
   // toggle a whole strategy cluster's legs in/out of the chart
-  const toggleCluster = syms => setHiddenLegs(h => {
-    const n = new Set(h);
-    const allHidden = syms.every(s => n.has(s));
-    syms.forEach(s => allHidden ? n.delete(s) : n.add(s));
-    return n;
-  });
+  const toggleCluster = syms => {
+    setHiddenLegs(h => {
+      const n = new Set(h);
+      const allHidden = syms.every(s => n.has(s));
+      syms.forEach(s => allHidden ? n.delete(s) : n.add(s));
+      return n;
+    });
+    loadPositions(true);
+  };
 
   // retry until the backend answers, so a restart mid-load can't strand
   // the page on "Checking setup…"
@@ -466,22 +485,18 @@ function App() {
     return () => { alive = false; };
   }, []);
 
+  // load positions on account change, refresh every 30s, and retry on error
   useEffect(() => {
     if (!account) return;
     let alive = true;
-    const load = () => fetch(api(`/api/positions/${account}`))
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(d => {
-        if (!alive) return;
-        setGroups(d.groups);
-        const keys = Object.keys(d.groups);
-        const saved = localStorage.getItem("tastier.sel");
-        if (keys.length) setSel(s => s ?? (saved && d.groups[saved] ? saved : keys[0]));
-      })
-      .catch(() => { if (alive) setTimeout(load, 3000); });
+    const load = () => {
+      if (!alive) return;
+      loadPositions(false);
+      setTimeout(load, 30000);
+    };
     load();
     return () => { alive = false; };
-  }, [account]);
+  }, [account, loadPositions]);
 
   // websocket quotes
   useEffect(() => {
@@ -506,6 +521,17 @@ function App() {
     connect();
     return () => { alive = false; ws && ws.close(); clearInterval(ping); };
   }, [account]);
+
+  // refresh positions whenever the user changes the selected position or sub-filter
+  useEffect(() => {
+    if (!account || !sel) return;
+    loadPositions(true);
+  }, [account, sel, loadPositions]);
+
+  useEffect(() => {
+    if (!account) return;
+    loadPositions(true);
+  }, [account, hideParam, loadPositions]);
 
   // clear strategy toggles when switching underlyings
   useEffect(() => setHiddenLegs(new Set()), [sel]);
@@ -547,7 +573,7 @@ function App() {
                   : quotes[legs[0]?.underlying_streamer] || {};
           return html`
           <div key=${u} class="group ${sel===u?'sel':''}"
-               onClick=${() => { setSel(u); localStorage.setItem("tastier.sel", u); }}>
+               onClick=${() => { loadPositions(true); setSel(u); localStorage.setItem("tastier.sel", u); }}>
             <div class="ghead">
               <${TickerLogo} sym=${u.replace(/^\//, "")} size=${16} className="glogo" />
               <span class="u">${u}</span>
