@@ -72,7 +72,8 @@ grant from tastytrade.
 
 1. Log in to the correct portal:
    - **Paper / cert:** https://developer.tastytrade.com → sandbox login
-   - **Live:** https://my.tastytrade.com
+     or
+   - **Live:** https://my.tastytrade.com which is probably where you have active positions
 2. Go to **Manage → My Profile → API → OAuth Applications**.
 3. Click **Create Application** (or equivalent). Give it a name like
    "Tastier Local".
