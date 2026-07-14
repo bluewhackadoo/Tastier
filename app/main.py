@@ -6,16 +6,18 @@ import asyncio
 from contextlib import asynccontextmanager
 from functools import reduce
 from math import gcd
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from . import payoff
-from .config import settings
+from .config import ENV_DIR as CONFIG_DIR, save_credentials, settings
 from .streamer import relay
 from .tasty import (fetch_logo, fetch_order_chains, fetch_positions,
-                    fetch_roll_basis, group_by_underlying, list_accounts)
+                    fetch_roll_basis, group_by_underlying, list_accounts,
+                    reset_session)
 
 
 @asynccontextmanager
@@ -28,7 +30,9 @@ app = FastAPI(title="Tastier Live Analysis", docs_url=None, redoc_url=None,
               lifespan=lifespan)
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "static"
-LOGO_DIR = ROOT / "logos"  # on-disk logo cache (gitignored)
+# Release binaries run from a read-only temp folder; keep the logo cache in
+# the same per-user config directory that holds the .env file.
+LOGO_DIR = CONFIG_DIR / "logos"
 
 # in-memory cache of last-fetched legs per account (source of truth = tasty)
 _legs_cache: dict[str, list[dict]] = {}
@@ -73,6 +77,32 @@ async def setup_validate() -> dict:
         return {"ok": False, "stage": "auth", "problems": [str(exc)[:300]]}
     return {"ok": True, "stage": "done", "accounts": accounts,
             "env": settings.tt_env}
+
+
+@app.post("/api/setup/credentials")
+async def setup_credentials(creds: dict) -> dict:
+    """Save user-supplied tastytrade OAuth credentials to the local .env file.
+
+    Only callable against 127.0.0.1; intended for the desktop release binary
+    setup flow. Credentials never leave the user's machine.
+    """
+    secret = str(creds.get("tt_secret", "")).strip()
+    refresh = str(creds.get("tt_refresh", "")).strip()
+    env = str(creds.get("tt_env", "paper")).strip().lower()
+    if env not in ("paper", "live"):
+        return {"ok": False, "problems": ["TT_ENV must be 'paper' or 'live'"]}
+    if not secret or not refresh:
+        return {"ok": False, "problems": ["TT_SECRET and TT_REFRESH are required"]}
+    save_credentials(secret, refresh, env)
+    # Re-read .env so settings reflects the new values in this process, and
+    # drop the cached tastytrade session — it copied the OLD credentials at
+    # construction, so keeping it means auth keeps failing ("Invalid JWT")
+    # until a restart even though the new credentials are fine.
+    from .config import ENV_PATH, load_dotenv
+    load_dotenv(ENV_PATH, override=True)
+    settings.__init__()  # type: ignore[misc]
+    reset_session()
+    return await setup_validate()
 
 
 @app.get("/api/accounts")

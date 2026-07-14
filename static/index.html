@@ -168,6 +168,17 @@
   .setupbox code { background: var(--panel2); padding: 2px 6px; border-radius: 4px;
                    font: 12px var(--mono); }
   .prob { color: var(--down); font: 12px var(--mono); margin: 4px 0; }
+  .setupform { display: grid; gap: 8px; margin: 16px 0; }
+  .setupform label { font: 11px var(--mono); color: var(--dim); text-transform: uppercase; }
+  .setupform input, .setupform select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px 10px; font: 13px var(--mono); }
+  .setupform button {
+    margin-top: 6px; background: var(--up); color: #05140e; border: none;
+    border-radius: 6px; padding: 10px; font: 600 13px var(--sans); cursor: pointer; }
+  .setupform button:disabled { opacity: .6; cursor: wait; }
+  .setuphint { margin-top: 14px; color: var(--dim); font-size: 13px; }
+  .setuphint ol { padding-left: 18px; line-height: 1.6; }
 </style>
 </head>
 <body>
@@ -338,9 +349,18 @@ function decompose(ls) {
 }
 
 // equity legs first, then clusters per expiration labeled with the detected
-// strategy; shared by the left panel and the position table. When legs carry
-// order-chain ids (how they were actually traded) the split follows the
-// chains; otherwise same-expiry stacks fall back to shape decomposition.
+// strategy; shared by the left panel and the position table.
+//
+// Grouping rules:
+// 1. Start from order chains when available (how tastytrade actually opened the
+//    positions).  Legs without a chain id are bucketed together as "unknown".
+// 2. Merge chain groups whose exact strike / type / direction signature is
+//    identical, so adding to the same strategy across multiple orders shows as
+//    one line.
+// 3. Non-identical strategies (including overlapping condors from different
+//    orders) stay in separate groups.
+// 4. Within each merged group, run shape decomposition so stacked identical
+//    strategies are still labeled correctly.
 function clusterLegs(legs) {
   const clusters = [];
   const eq = legs.filter(l => l.strike == null);
@@ -348,19 +368,45 @@ function clusterLegs(legs) {
     label: eq[0].symbol?.includes("/") ? "Futures" : "Stock", legs: eq });
   const byExp = {};
   for (const l of legs) if (l.strike != null) (byExp[l.expiration] ??= []).push(l);
+
+  const sig = ls => {
+    const parts = ls.map(l => `${l.strike}:${l.option_type}:${Math.sign(l.qty)}`);
+    return [...new Set(parts)].sort().join("|");
+  };
+
   for (const exp of Object.keys(byExp).sort()) {
     const dl = byExp[exp];
-    let subs;
-    if (dl.every(l => l.chain != null) && new Set(dl.map(l => l.chain)).size > 1) {
-      subs = [...new Set(dl.map(l => l.chain))].sort()
-        .map(c => dl.filter(l => l.chain === c));
-    } else {
-      subs = decompose(dl.sort((a, b) =>
-        a.strike - b.strike || (a.option_type === "P" ? -1 : 1)));
+    // Split by order chain when any leg has chain info.
+    const byChain = {};
+    for (const l of dl) {
+      const c = l.chain == null ? "__unknown__" : l.chain;
+      (byChain[c] ??= []).push(l);
     }
-    for (const sub of subs) {
-      sub.sort((a, b) => a.strike - b.strike || (a.option_type === "P" ? -1 : 1));
-      clusters.push({ label: `${classify(sub)} · ${dteDays(sub[0])}d`, legs: sub });
+    let groups = Object.values(byChain).map(g => g.map(l => ({...l})));
+
+    // Merge identical signatures across chains/orders.
+    const merged = [];
+    for (const g of groups) {
+      const key = sig(g);
+      const idx = merged.findIndex(m => sig(m) === key);
+      if (idx >= 0) {
+        for (const leg of g) {
+          const match = merged[idx].find(l =>
+            l.strike === leg.strike && l.option_type === leg.option_type);
+          if (match) match.qty += leg.qty;
+          else merged[idx].push(leg);
+        }
+      } else {
+        merged.push(g);
+      }
+    }
+
+    for (const m of merged) {
+      for (const sub of decompose(m.sort((a, b) =>
+        a.strike - b.strike || (a.option_type === "P" ? -1 : 1)))) {
+        sub.sort((a, b) => a.strike - b.strike || (a.option_type === "P" ? -1 : 1));
+        clusters.push({ label: `${classify(sub)} · ${dteDays(sub[0])}d`, legs: sub });
+      }
     }
   }
   return clusters;
@@ -846,10 +892,16 @@ function Analysis({ ana, stale, sel, hidden, onToggle }) {
     theta: (ana.theta || [])[i] ?? 0,
     expPos: Math.max(ana.expiration_pl[i], 0),
     expNeg: Math.min(ana.expiration_pl[i], 0),
-    ...Object.fromEntries((ana.curves || []).flatMap((c, j) => [
-      ["c" + j, c.pl[i]],
-      ["cPos" + j, Math.max(c.pl[i], 0)],
-    ])),
+    ...Object.fromEntries((ana.curves || []).flatMap((c, j) => {
+      const expVal = ana.expiration_pl[i];
+      const cVal = c.pl[i];
+      const cPos = Math.max(cVal, 0);
+      return [
+        ["c" + j, cVal],
+        ["cPos" + j, cPos],
+        ["cFill" + j, expVal > 0 ? cPos : 0],
+      ];
+    })),
   })), [ana]);
   // symmetric Y domain so P/L zero sits exactly on the center price strip
   const yMax = useMemo(() => {
@@ -964,18 +1016,24 @@ function Analysis({ ana, stale, sel, hidden, onToggle }) {
                       domain=${view ?? ["dataMin", "dataMax"]} />
             <${YAxis} hide=${true} domain=${[-yMax, yMax]} />
             <${Tooltip} content=${p => html`<${ChartTip} ...${p} curves=${ana.curves} />`} />
+            ${(ana.curves || []).map((c, j) => html`
+              <${React.Fragment} key=${"c" + j}>
+                <${Area} type="monotone" dataKey=${"cFill" + j}
+                         stroke=${DTE_SHADES[j % DTE_SHADES.length].line} strokeWidth=${1.5}
+                         fill=${DTE_SHADES[j % DTE_SHADES.length].fill} fillOpacity=${0.45}
+                         baseValue=${0} dot=${false} activeDot=${false}
+                         isAnimationActive=${false} name=${c.label || (c.dte_days + "d")} />
+                <${Line} type="monotone" dataKey=${"c" + j}
+                         stroke=${DTE_SHADES[j % DTE_SHADES.length].line} strokeWidth=${1.5}
+                         dot=${false} activeDot=${false}
+                         isAnimationActive=${false} />
+              <//>`)}
             <${Area} type="monotone" dataKey="expPos" stroke="#3ddc97" strokeWidth=${1.5}
-                     fill="#1b4d3a" fillOpacity=${0.5} baseValue=${0}
+                     fill="#1b4d3a" fillOpacity=${0.6} baseValue=${0}
                      dot=${false} activeDot=${false} isAnimationActive=${false} />
             <${Area} type="monotone" dataKey="expNeg" stroke="#e0455e" strokeWidth=${1.5}
-                     fill="#5c1e26" fillOpacity=${0.5} baseValue=${0}
+                     fill="#5c1e26" fillOpacity=${0.6} baseValue=${0}
                      dot=${false} activeDot=${false} isAnimationActive=${false} />
-            ${(ana.curves || []).map((c, j) => html`
-              <${Area} key=${"c" + j} type="monotone" dataKey=${"cPos" + j}
-                       stroke=${DTE_SHADES[j % DTE_SHADES.length].line} strokeWidth=${1.5}
-                       fill=${DTE_SHADES[j % DTE_SHADES.length].fill} fillOpacity=${0.5}
-                       baseValue=${0} dot=${false} activeDot=${false}
-                       isAnimationActive=${false} name=${c.dte_days + "d"} />`)}
             <${Line} type="monotone" dataKey="t0" stroke="#f59e0b" dot=${false}
                      strokeWidth=${2} isAnimationActive=${false} name="t0" />
             <${Customized} component=${p => chartOverlay(p, ana)} />
@@ -1072,16 +1130,71 @@ function PositionTable({ stats, rollBasis, hidden, onToggle }) {
 }
 
 function SetupHelp({ setup }) {
+  const [secret, setSecret] = useState("");
+  const [refresh, setRefresh] = useState("");
+  const [env, setEnv] = useState("paper");
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState(null);
+  const save = async (e) => {
+    e.preventDefault();
+    setSaving(true); setSaveErr(null);
+    try {
+      const r = await fetch(api("/api/setup/credentials"), {
+        method: "POST", headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({tt_secret: secret, tt_refresh: refresh, tt_env: env})
+      });
+      const s = await r.json();
+      if (s.ok) location.reload();
+      else setSaveErr(s.problems?.join("; ") || "save failed");
+    } catch (err) {
+      // "Failed to fetch" = nothing answered at all — the local backend is
+      // gone (closed, killed, or blocked), not a credential problem
+      setSaveErr(/fetch/i.test(err.message || "")
+        ? "the Tastier app isn't running (or was closed) — relaunch it, refresh this page, and try again"
+        : (err.message || String(err)));
+    }
+    setSaving(false);
+  };
   return html`
     <div class="setupbox">
       <h2 style=${{marginTop:0}}>Setup needed (stage: ${setup.stage})</h2>
       ${setup.problems.map(p => html`<div key=${p} class="prob">✗ ${p}</div>`)}
-      <ol style=${{color:'var(--dim)'}}>
-        <li>Copy <code>.env.example</code> to <code>.env</code></li>
-        <li>Create a read-only OAuth grant at my.tastytrade.com → API</li>
-        <li>Paste <code>TT_SECRET</code> and <code>TT_REFRESH</code> into <code>.env</code></li>
-        <li>Run <code>chmod 600 .env</code>, then <code>make check</code></li>
-      </ol>
+
+      <form class="setupform" onSubmit=${save}>
+        <label>TT_SECRET</label>
+        <input type="password" value=${secret} onInput=${e=>setSecret(e.target.value)}
+               placeholder="your_client_secret" required />
+        <label>TT_REFRESH</label>
+        <input type="password" value=${refresh} onInput=${e=>setRefresh(e.target.value)}
+               placeholder="your_refresh_token" required />
+        <label>Environment</label>
+        <select value=${env} onChange=${e=>setEnv(e.target.value)}>
+          <option value="paper">paper (sandbox / cert)</option>
+          <option value="live">live</option>
+        </select>
+        <button type="submit" disabled=${saving}>
+          ${saving ? "Saving…" : "Save credentials locally & connect"}
+        </button>
+        ${saveErr ? html`<div class="prob">${saveErr}</div>` : null}
+      </form>
+
+      <details class="setuphint">
+        <summary>How do I get TT_SECRET and TT_REFRESH?</summary>
+        <ol>
+          <li>Log in to <strong>my.tastytrade.com</strong> (or the sandbox portal for paper).</li>
+          <li>Go to <strong>Manage → My Profile → API → OAuth Applications</strong>.</li>
+          <li>Create a personal OAuth app. Scopes: <strong>read only</strong> (do not enable trade).</li>
+          <li>Generate a personal grant. Copy the <strong>Client Secret</strong> → TT_SECRET.</li>
+          <li>Copy the <strong>Refresh Token</strong> → TT_REFRESH.</li>
+          <li>Paste both above. They are stored only on this computer in your local app data folder.</li>
+        </ol>
+      </details>
+
+      <p style=${{color:'var(--dim)',fontSize:'12px',marginTop:'16px'}}>
+        You can also create/edit the <code>.env</code> file directly in your OS user-data
+        folder (Windows: <code>%LOCALAPPDATA%\\Tastier\\.env</code>, macOS:
+        <code>~/Library/Application Support/Tastier/.env</code>) and restart the app.
+      </p>
       <button class="reload" onClick=${()=>location.reload()}>Re-check</button>
     </div>`;
 }

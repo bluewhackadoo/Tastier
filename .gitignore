@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .claude/
 logos/
+.venv/
+dist/
+build/
+*.spec.orig
+tastier.log

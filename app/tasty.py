@@ -81,8 +81,21 @@ async def get_session() -> Session:
             refresh_token=settings.tt_refresh,
             is_test=settings.is_test,
         )
-    await _session.refresh()  # no-op if still valid; handles expiry
+    try:
+        await _session.refresh()  # no-op if still valid; handles expiry
+    except Exception:
+        # a Session copies credentials at construction; if auth fails, drop
+        # it so the next call rebuilds from current settings (e.g. after the
+        # setup flow saved new credentials) instead of retrying stale ones
+        _session = None
+        raise
     return _session
+
+
+def reset_session() -> None:
+    """Forget the cached tastytrade session (e.g. after credentials change)."""
+    global _session
+    _session = None
 
 
 def _f(x: Any) -> float:

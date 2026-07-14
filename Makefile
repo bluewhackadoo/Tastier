@@ -1,7 +1,13 @@
-.PHONY: run check test test-e2e
+.PHONY: run check test test-e2e build
 
 run:
 	uvicorn app.main:app --host 127.0.0.1 --port 8420
+
+build:
+	pip install -r requirements-build.txt
+	# stdlib distutils: setuptools' _distutils_hack asserts inside
+	# PyInstaller's isolated child process otherwise (Python <= 3.11)
+	SETUPTOOLS_USE_DISTUTILS=stdlib pyinstaller Tastier.spec --noconfirm
 
 check:
 	@python -c "import asyncio, json; from app.main import setup_validate; \
