@@ -24,7 +24,6 @@ a = Analysis(
     datas=[
         ('app', 'app'),
         ('static', 'static'),
-        ('logos', 'logos'),
         ('.env.example', '.'),
     ],
     hiddenimports=[],
