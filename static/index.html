@@ -203,7 +203,7 @@ const wsUrl = p => (ORIGIN ? ORIGIN.replace(/^http/, "ws") : `ws://${location.ho
 
 const fmt = (v, d=2) => v == null ? "—" :
   v.toLocaleString("en-US", {minimumFractionDigits:d, maximumFractionDigits:d});
-const money = v => (v < 0 ? "-$" : "$") + fmt(Math.abs(v));
+const money = v => (v < 0 ? "-$" : "$") + fmt(Math.abs(v)).replace(/\.00$/, "");
 const fmtK = v => Math.abs(v) >= 1000 ? (v/1000).toFixed(2) + "K" : String(Math.round(v));
 const signColor = v => v >= 0 ? "#2dd4a7" : "#ff5d73";
 
@@ -1047,7 +1047,7 @@ function Analysis({ ana, stale, sel, hidden, onToggle }) {
             ${cell("Spot", html`${fmt(ana.spot)}${stale ? html`<span class="stale">stale</span>` : ''}`)}
             ${cell("Max Profit", sv(1, money(ana.max_profit)))}
             ${cell("Max Loss", sv(-1, money(ana.max_loss)))}
-            ${cell("Breakevens", ana.breakevens.map(b => fmt(b)).join(" / ") || "—")}
+            ${cell("Breakevens", ana.breakevens.map(b => fmt(b, 1)).join("/") || "—")}
           </div>
         </div>
         <div class="vdivider" onMouseDown=${dragTopleft}></div>
