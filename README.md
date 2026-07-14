@@ -1,7 +1,8 @@
-# Tasty Live Analysis (P1)
+# TastyTrade Position Analysis 
 
 Localhost web app: pulls tastytrade positions (read-only) and renders a live
 payoff analysis graph — expiration curve, T+0 curve, breakevens, live P/L.
+Yest this will be on http://localhost or 127.0.0.1 to avoid breaking TT security policies and to keep your account safe.
 
 ## Security model
 
