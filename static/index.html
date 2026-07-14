@@ -689,16 +689,40 @@ function chartOverlay(props, ana) {
 // CFD proxies (SPXUSD, etc.) render fine. Futures use the continuous
 // front-month contract; equities pass through.
 const TV_SYMBOL = {
-  SPX: "FOREXCOM:SPXUSD", SPXW: "FOREXCOM:SPXUSD", XSP: "FOREXCOM:SPXUSD",
-  NDX: "FOREXCOM:NSXUSD", NDXP: "FOREXCOM:NSXUSD", RUT: "FOREXCOM:US2000",
-  DJX: "FOREXCOM:DJI", VIX: "TVC:VIX", VX: "TVC:VIX",
+  SPX: "OANDA:SPX500USD",
+  // NDX: "FOREXCOM:NSXUSD", NDXP: "FOREXCOM:NSXUSD", RUT: "FOREXCOM:US2000",
+  // DJX: "FOREXCOM:DJI", VIX: "TVC:VIX", VX: "TVC:VIX",
 };
+// Futures that render as explicit monthly contracts on TradingView rather than
+// continuous contracts (e.g. /CLU6 -> CLU2026).
+const MONTHLY_FUTURES = new Set(["CL"]);
 function tvSymbol(sel) {
   if (!sel) return "";
   if (TV_SYMBOL[sel]) return TV_SYMBOL[sel];
   if (sel.startsWith("/")) {
-    const m = sel.slice(1).match(/^([A-Z0-9]+?)([FGHJKMNQUVXZ]\d{1,2})?$/);
-    return (m ? m[1] : sel.slice(1)) + "1!";
+    // Try /ROOTMONTHYEAR first (e.g. /CLU6 or /CLU26)
+    const m = sel.slice(1).match(/^([A-Z0-9]+?)([FGHJKMNQUVXZ])(\d{1,2})$/);
+    if (m) {
+      const base = m[1];
+      const month = m[2];
+      let yr = parseInt(m[3], 10);
+      const currentYear = new Date().getFullYear();
+      let fullYear;
+      if (yr < 10) {
+        fullYear = Math.floor(currentYear / 10) * 10 + yr;
+        if (fullYear < currentYear) fullYear += 10;
+      } else {
+        fullYear = 2000 + yr;
+      }
+      if (MONTHLY_FUTURES.has(base)) return `${base}${month}${fullYear}`;
+      if (TV_SYMBOL[base]) return TV_SYMBOL[base];
+      return `${base}${month}${fullYear}`;
+    }
+    // Otherwise fall back to continuous front-month contract.
+    const m2 = sel.slice(1).match(/^([A-Z0-9]+)/);
+    const base = m2 ? m2[1] : sel.slice(1);
+    if (TV_SYMBOL[base]) return TV_SYMBOL[base];
+    return base + "1!";
   }
   return sel;
 }

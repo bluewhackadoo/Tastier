@@ -152,9 +152,12 @@ async def fetch_positions(account_number: str) -> list[dict]:
     out: list[dict] = []
     for p in positions:
         sign = 1 if p.quantity_direction == "Long" else -1
+        # Futures are grouped by the specific contract symbol so the frontend can
+        # map e.g. /VXMQ26 -> VXMQ2026 for the TradingView chart.
+        underlying = p.symbol if p.instrument_type.value == "Future" else p.underlying_symbol
         leg: dict = {
             "symbol": p.symbol,
-            "underlying": p.underlying_symbol,
+            "underlying": underlying,
             "instrument_type": p.instrument_type.value,
             "qty": sign * _f(p.quantity),
             "multiplier": _f(p.multiplier) or 1.0,
