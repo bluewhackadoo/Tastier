@@ -85,6 +85,11 @@
                font-weight: 400; color: var(--warn); background: #2b2413;
                border: 1px solid #5a4a1e; border-radius: 3px; padding: 0 5px;
                vertical-align: middle; letter-spacing: .02em; }
+  .rsbbadge { display: inline-block; margin: 2px 0; font: 9px var(--mono);
+              font-weight: 400; color: #c4b5fd; background: #2e2652;
+              border: 1px solid #5b52a3; border-radius: 3px; padding: 0 5px;
+              vertical-align: middle; letter-spacing: .02em; }
+  table.pos tr.rsb-row td { padding: 2px 8px; background: transparent; border: none; }
   .num.pos { color: var(--up); } .num.neg { color: var(--down); }
   .syminfo { display: flex; align-items: center; gap: 10px; }
   .symlogo { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
@@ -366,6 +371,57 @@ function decompose(ls) {
 //    orders) stay in separate groups.
 // 4. Within each merged group, run shape decomposition so stacked identical
 //    strategies are still labeled correctly.
+// Detect a Ratio Super Bull (RSB) or reverse RSB across all option legs.
+// Standard RSB: 2 short OTM puts, 1 long ATM call, 1 short OTM call.
+// Reverse RSB: 2 short OTM puts, 1 long ATM put,  1 short OTM call.
+// Typically the long option is a LEAP and the short puts are near-term,
+// so the legs may span expirations and order chains.  Returns the type or null.
+function detectRSB(legs, spot) {
+  const opts = legs.filter(l => l.strike != null);
+  if (opts.length < 3 || opts.length > 4) return null;
+
+  // Aggregate quantities: the two short puts may be one leg with qty -2.
+  const shortPutQty = Math.abs(opts.filter(l => l.option_type === "P" && l.qty < 0)
+    .reduce((a, l) => a + l.qty, 0));
+  const longPutQty = opts.filter(l => l.option_type === "P" && l.qty > 0)
+    .reduce((a, l) => a + l.qty, 0);
+  const longCallQty = opts.filter(l => l.option_type === "C" && l.qty > 0)
+    .reduce((a, l) => a + l.qty, 0);
+  const shortCallQty = Math.abs(opts.filter(l => l.option_type === "C" && l.qty < 0)
+    .reduce((a, l) => a + l.qty, 0));
+
+  const isStandard = shortPutQty === 2 * longCallQty && shortCallQty === longCallQty && longCallQty > 0;
+  const isReverse = shortPutQty === 2 * longPutQty && shortCallQty === longPutQty && longPutQty > 0;
+  if (!isStandard && !isReverse) return null;
+
+  const byStrike = [...opts].sort((a, b) => a.strike - b.strike);
+  const lo1 = byStrike[0];
+  const hi = byStrike[byStrike.length - 1];
+
+  // Lowest strike(s) must be short puts, highest strike a short call.
+  if (lo1.option_type !== "P" || lo1.qty >= 0) return null;
+  if (hi.option_type !== "C" || hi.qty >= 0) return null;
+
+  // The long option sits between the short puts and short call.
+  const longLeg = isStandard
+    ? byStrike.find(l => l.option_type === "C" && l.qty > 0)
+    : byStrike.find(l => l.option_type === "P" && l.qty > 0);
+  if (!longLeg || longLeg.strike <= lo1.strike || longLeg.strike >= hi.strike) return null;
+
+  // Moneyness helpers.  When no spot is available yet, fall back to the
+  // strike-ordering heuristic above (already verified).
+  const hasSpot = spot != null && spot > 0;
+  const otmPut = l => !hasSpot || l.strike < spot * 0.90;
+  const otmCall = l => !hasSpot || l.strike > spot * 1.10;
+  const longOk = l => !hasSpot || Math.abs(l.strike - spot) / spot <= 0.25;
+
+  if (!otmPut(lo1) || !otmCall(hi)) return null;
+
+  if (isStandard && longLeg.option_type === "C" && longOk(longLeg)) return "🐂RSB";
+  if (isReverse && longLeg.option_type === "P" && longOk(longLeg)) return "🐻Reverse RSB";
+  return null;
+}
+
 function clusterLegs(legs) {
   const clusters = [];
   const eq = legs.filter(l => l.strike == null);
@@ -417,12 +473,16 @@ function clusterLegs(legs) {
   return clusters;
 }
 
-function GroupLegs({ legs }) {
-  return clusterLegs(legs).map(c => html`
+function GroupLegs({ legs, spot }) {
+  const rsb = detectRSB(legs, spot);
+  return html`
+    ${rsb ? html`<div class="rsbbadge">${rsb}</div>` : null}
+    ${clusterLegs(legs).map(c => html`
     <div key=${c.label + ":" + c.legs[0].symbol}>
       <div class="subexp">${c.label}</div>
       ${c.legs.map(l => html`<${LegPills} key=${l.symbol} l=${l} />`)}
-    </div>`);
+    </div>`)}
+  `;
 }
 
 function App() {
@@ -584,7 +644,7 @@ function App() {
               <span class="u">${u}</span>
               <span class="px ${q.dir || ''}">${fmt(q.mid)}</span>
             </div>
-            <${GroupLegs} legs=${legs} />
+            <${GroupLegs} legs=${legs} spot=${q.mid} />
           </div>`;})}
         ${!Object.keys(groups).length && html`<div class="empty">No open positions</div>`}
       </div>
@@ -642,7 +702,7 @@ function chartOverlay(props, ana, yc) {
   if (yc) {
     for (const sign of [1, -1]) {
       const vEdge = (sign > 0 ? yc.pos : yc.neg) / (0.9 * yc.zoom);
-      const stepY = niceStep(vEdge / 3);
+      const stepY = niceStep(vEdge / 4);
       for (let v = stepY; v <= vEdge * 1.001; v += stepY) {
         const yy = y(tf(sign * v));
         if (yy < top + 10 || yy > bottom - 4) continue;
@@ -1142,12 +1202,13 @@ function Analysis({ ana, stale, sel, hidden, onToggle }) {
       </div>
       <div class="hdivider" onMouseDown=${dragChart}></div>
       ${ana.leg_stats ? html`<${PositionTable} stats=${ana.leg_stats} rollBasis=${ana.roll_basis}
-                              hidden=${hidden} onToggle=${onToggle} />` : null}
+                              hidden=${hidden} onToggle=${onToggle} spot=${ana.spot} />` : null}
     </div>`;
 }
 
-function PositionTable({ stats, rollBasis, hidden, onToggle }) {
+function PositionTable({ stats, rollBasis, hidden, onToggle, spot }) {
   const isOff = c => hidden && c.legs.every(l => hidden.has(l.symbol));
+  const rsb = detectRSB(stats, spot);
   const num = (v, d=2) => html`<span class="num ${v>0?'pos':v<0?'neg':''}">${fmt(v,d)}</span>`;
   const clusters = clusterLegs(stats);
   const sum = (ls, k) => ls.reduce((a, s) => a + s[k], 0);
@@ -1186,6 +1247,7 @@ function PositionTable({ stats, rollBasis, hidden, onToggle }) {
         <th>IV</th><th>Cst</th><th>Ext</th><th>P/L Open</th>
       </tr></thead>
       <tbody>
+        ${rsb ? html`<tr class="rsb-row"><td colspan="10"><span class="rsbbadge">${rsb}</span></td></tr>` : null}
         ${clusters.map(c => { const off = isOff(c); return html`
           <${React.Fragment} key=${c.label + ":" + c.legs[0].symbol}>
             <tr class="grp ${off ? 'off' : ''}" title="click to toggle this strategy on the chart"
