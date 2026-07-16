@@ -257,6 +257,28 @@ async def fetch_order_chains(account_number: str, underlying: str) -> dict[str, 
     return out
 
 
+async def fetch_year_stats(account_number: str, underlying: str) -> dict:
+    """Trailing-1-year option transaction stats for one underlying: net cash
+    flow, transaction count, first activity date. Advisor dossier input."""
+    session = await get_session()
+    account = await Account.get(session, account_number)
+    start = dt.date.today() - dt.timedelta(days=365)
+    txns = await account.get_history(session, underlying_symbol=underlying,
+                                     per_page=250, start_date=start)
+    cash, n, first = 0.0, 0, None
+    for t in txns:
+        it = getattr(t, "instrument_type", None)
+        if it is None or "Option" not in str(it.value):
+            continue
+        cash += float(t.net_value or 0)
+        n += 1
+        d = getattr(t, "transaction_date", None)
+        if d and (first is None or d < first):
+            first = d
+    return {"net_cash_flow_1yr": round(cash, 2), "option_txn_count_1yr": n,
+            "first_activity": first.isoformat() if first else None}
+
+
 async def fetch_roll_basis(account_number: str, underlying: str) -> dict[str, dict]:
     """Roll-adjusted cost basis for one equity-option underlying.
 

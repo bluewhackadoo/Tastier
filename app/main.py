@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from functools import reduce
 from math import gcd
 import os
@@ -12,12 +13,12 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from . import payoff
+from . import advisor, payoff
 from .config import ENV_DIR as CONFIG_DIR, save_credentials, settings
 from .streamer import relay
 from .tasty import (fetch_logo, fetch_order_chains, fetch_positions,
-                    fetch_roll_basis, group_by_underlying, list_accounts,
-                    reset_session)
+                    fetch_roll_basis, fetch_year_stats, group_by_underlying,
+                    list_accounts, reset_session)
 
 
 @asynccontextmanager
@@ -258,6 +259,59 @@ def _leg_stats(legs_raw: list[dict], spot: float) -> list[dict]:
 
 
 _logo_mem: dict[str, bytes | None] = {}  # symbol -> svg bytes, or None = no logo
+
+
+@app.post("/api/analyze/{account_number}/{underlying:path}")
+async def analyze_position(account_number: str, underlying: str) -> dict:
+    """On-demand LLM analysis of one underlying's open position. Advisory
+    text only — this app has no order endpoints and none are added here."""
+    legs_raw = [l for l in _legs_cache.get(account_number, [])
+                if l["underlying"] == underlying]
+    if not legs_raw:
+        raise HTTPException(404, "no cached legs; call /api/positions first")
+
+    spot_symbol = legs_raw[0].get("underlying_streamer") or underlying
+    q = relay.latest.get(spot_symbol, {}) or relay.latest.get(underlying, {})
+    spot = q.get("mid") or q.get("bid") or 0.0
+    if not spot:
+        spot = next((l["mark_price"] for l in legs_raw if l["strike"] is None), 0.0)
+
+    stats = _leg_stats(legs_raw, float(spot or 0))
+    pa: dict = {}
+    if spot:
+        legs_p = [payoff.Leg(
+            qty=l["qty"], multiplier=l["multiplier"], open_price=l["open_price"],
+            strike=l["strike"], option_type=l["option_type"],
+            dte_years=l["dte_years"],
+            iv=(relay.latest.get(l["streamer_symbol"], {}) or {}).get("iv", 0.0) or 0.20,
+            symbol=l["symbol"], chain=l.get("chain")) for l in legs_raw]
+        pa = payoff.analysis(legs_p, float(spot))
+    try:
+        year = await fetch_year_stats(account_number, underlying)
+    except Exception:
+        year = {}
+
+    dossier = {
+        "underlying": underlying,
+        "description": legs_raw[0].get("underlying_desc", ""),
+        "spot": spot,
+        "position": {k: pa.get(k) for k in
+                     ("live_pl", "net_open_cost", "max_profit", "max_loss",
+                      "breakevens", "exp_dte")},
+        "legs": [{k: s.get(k) for k in
+                  ("qty", "strike", "option_type", "expiration", "dte_days",
+                   "trd_prc", "mark", "delta", "theta", "iv", "chain")}
+                 for s in stats],
+        "roll_history": await _roll_basis(account_number, underlying, legs_raw),
+        "trailing_1yr": year,
+    }
+    try:
+        result = await advisor.analyze(dossier)
+    except RuntimeError as exc:
+        return {"ok": False, "problems": [str(exc)]}
+    result["ok"] = True
+    result["generated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return result
 
 
 @app.get("/api/logo/{symbol}")

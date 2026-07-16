@@ -81,6 +81,29 @@
   table.pos tr.off td { opacity: .38; }
   .vis { display: inline-block; width: 14px; color: var(--accent); }
   tr.off .vis { color: var(--dim); }
+  .advisor { margin-top: 14px; background: var(--panel); border: 1px solid var(--line);
+             border-radius: 8px; padding: 14px 16px; }
+  .advisor .ahead { display: flex; align-items: center; gap: 10px; }
+  .advisor .ahead h3 { margin: 0; font: 600 12px var(--mono); letter-spacing: .07em;
+                       text-transform: uppercase; color: var(--dim); }
+  .advisor .meta { margin-left: auto; font: 11px var(--mono); color: var(--dim); }
+  button.abtn { background: #1f6f4e; color: #fff; border: 0; border-radius: 6px;
+                padding: 6px 14px; cursor: pointer; font-size: 12px; font-weight: 600; }
+  button.abtn:hover { background: #27865f; }
+  button.abtn:disabled { opacity: .55; cursor: wait; }
+  .advisor .asum { margin: 12px 0 4px; font-size: 13px; line-height: 1.55; }
+  .advisor .aout { color: var(--dim); font-size: 12.5px; margin-bottom: 10px; }
+  .rec { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px;
+         border: 1px solid var(--line); border-left: 3px solid var(--accent);
+         border-radius: 6px; margin: 6px 0; background: var(--panel2); }
+  .rec .rtag { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .06em;
+               white-space: nowrap; padding-top: 2px; min-width: 86px; }
+  .rec .rbody b { font-size: 12.5px; }
+  .rec .rbody div { font-size: 12px; color: #b9c2cf; margin-top: 2px; line-height: 1.45; }
+  .rec .conf { margin-left: auto; font: 10px var(--mono); color: var(--dim);
+               white-space: nowrap; padding-top: 2px; }
+  .awarn { margin-top: 10px; font-size: 12px; color: var(--warn); }
+  .adisc { margin-top: 10px; font-size: 10px; color: var(--dim); }
   .rollbadge { display: inline-block; margin-left: 7px; font: 9px var(--mono);
                font-weight: 400; color: var(--warn); background: #2b2413;
                border: 1px solid #5a4a1e; border-radius: 3px; padding: 0 5px;
@@ -371,54 +394,69 @@ function decompose(ls) {
 //    orders) stay in separate groups.
 // 4. Within each merged group, run shape decomposition so stacked identical
 //    strategies are still labeled correctly.
+// Find a subset of items whose weights exactly equal target (memoised DFS).
+function findExactSubset(items, target, weightFn) {
+  const n = items.length;
+  const memo = new Map();
+  const dfs = (i, remaining) => {
+    if (remaining === 0) return [];
+    if (i >= n || remaining < 0) return null;
+    const key = `${i},${remaining}`;
+    if (memo.has(key)) return memo.get(key);
+    const w = weightFn(items[i]);
+    const take = w <= remaining ? dfs(i + 1, remaining - w) : null;
+    if (take) {
+      const res = [items[i], ...take];
+      memo.set(key, res);
+      return res;
+    }
+    const skip = dfs(i + 1, remaining);
+    memo.set(key, skip);
+    return skip;
+  };
+  return dfs(0, target);
+}
+
 // Detect a Ratio Super Bull (RSB) or reverse RSB across all option legs.
 // Standard RSB: 2 short OTM puts, 1 long ATM call, 1 short OTM call.
 // Reverse RSB: 2 short OTM puts, 1 long ATM put,  1 short OTM call.
 // Typically the long option is a LEAP and the short puts are near-term,
 // so the legs may span expirations and order chains.  Returns the type or null.
+// We search for an RSB *core* inside the full position so added wings/strangles
+// don't hide the original strategy.
 function detectRSB(legs, spot) {
   const opts = legs.filter(l => l.strike != null);
-  if (opts.length < 3 || opts.length > 4) return null;
+  if (opts.length < 3) return null;
 
-  // Aggregate quantities: the two short puts may be one leg with qty -2.
-  const shortPutQty = Math.abs(opts.filter(l => l.option_type === "P" && l.qty < 0)
-    .reduce((a, l) => a + l.qty, 0));
-  const longPutQty = opts.filter(l => l.option_type === "P" && l.qty > 0)
-    .reduce((a, l) => a + l.qty, 0);
-  const longCallQty = opts.filter(l => l.option_type === "C" && l.qty > 0)
-    .reduce((a, l) => a + l.qty, 0);
-  const shortCallQty = Math.abs(opts.filter(l => l.option_type === "C" && l.qty < 0)
-    .reduce((a, l) => a + l.qty, 0));
-
-  const isStandard = shortPutQty === 2 * longCallQty && shortCallQty === longCallQty && longCallQty > 0;
-  const isReverse = shortPutQty === 2 * longPutQty && shortCallQty === longPutQty && longPutQty > 0;
-  if (!isStandard && !isReverse) return null;
-
-  const byStrike = [...opts].sort((a, b) => a.strike - b.strike);
-  const lo1 = byStrike[0];
-  const hi = byStrike[byStrike.length - 1];
-
-  // Lowest strike(s) must be short puts, highest strike a short call.
-  if (lo1.option_type !== "P" || lo1.qty >= 0) return null;
-  if (hi.option_type !== "C" || hi.qty >= 0) return null;
-
-  // The long option sits between the short puts and short call.
-  const longLeg = isStandard
-    ? byStrike.find(l => l.option_type === "C" && l.qty > 0)
-    : byStrike.find(l => l.option_type === "P" && l.qty > 0);
-  if (!longLeg || longLeg.strike <= lo1.strike || longLeg.strike >= hi.strike) return null;
-
-  // Moneyness helpers.  When no spot is available yet, fall back to the
-  // strike-ordering heuristic above (already verified).
   const hasSpot = spot != null && spot > 0;
   const otmPut = l => !hasSpot || l.strike < spot * 0.90;
   const otmCall = l => !hasSpot || l.strike > spot * 1.10;
   const longOk = l => !hasSpot || Math.abs(l.strike - spot) / spot <= 0.25;
 
-  if (!otmPut(lo1) || !otmCall(hi)) return null;
+  // Try standard RSB: for each long call, look for short puts totaling 2x qty
+  // and a short call with matching qty, all ordered around the long call.
+  for (const longCall of opts.filter(l => l.option_type === "C" && l.qty > 0)) {
+    const q = longCall.qty;
+    const puts = opts.filter(l => l !== longCall && l.option_type === "P" && l.qty < 0 && l.strike < longCall.strike && otmPut(l));
+    const shortCalls = opts.filter(l => l !== longCall && l.option_type === "C" && l.qty < 0 && l.strike > longCall.strike && otmCall(l));
+    const putQty = puts.reduce((total, l) => total - l.qty, 0);
+    const shortCallQty = shortCalls.reduce((total, l) => total - l.qty, 0);
+    if (putQty >= 2 * q && shortCallQty >= q && longOk(longCall))
+      return "🐂RSB";
+  }
 
-  if (isStandard && longLeg.option_type === "C" && longOk(longLeg)) return "🐂RSB";
-  if (isReverse && longLeg.option_type === "P" && longOk(longLeg)) return "🐻Reverse RSB";
+  // Try reverse RSB: for each long put, look for short puts totaling 2x qty
+  // and a short call with matching qty.
+  for (const longPut of opts.filter(l => l.option_type === "P" && l.qty > 0)) {
+    const q = longPut.qty;
+    const puts = opts.filter(l => l !== longPut && l.option_type === "P" && l.qty < 0 && l.strike < longPut.strike && otmPut(l));
+    const shortCalls = opts.filter(l => l !== longPut && l.option_type === "C" && l.qty < 0 && l.strike > longPut.strike && otmCall(l));
+    const putQty = puts.reduce((total, l) => total - l.qty, 0);
+    const shortCallQty = shortCalls.reduce((total, l) => total - l.qty, 0);
+    if (putQty >= 2 * q && shortCallQty >= q && longOk(longPut))
+      return "🐻Reverse RSB";
+  }
+
   return null;
 }
 
@@ -496,6 +534,8 @@ function App() {
   const [setupErr, setSetupErr] = useState(null);
   const [hiddenLegs, setHiddenLegs] = useState(new Set());  // per-strategy chart toggles
   const anaTimer = useRef(null);
+  const leftRef = useRef(null);
+  const scrolledSelection = useRef(null);
   const hideParam = [...hiddenLegs].sort().join(",");
 
   // fetch positions; on initial load also pick a default selection
@@ -601,6 +641,19 @@ function App() {
   // clear strategy toggles when switching underlyings
   useEffect(() => setHiddenLegs(new Set()), [sel]);
 
+  useEffect(() => {
+    if (!account || !sel || !groups[sel]) return;
+    const key = `${account}:${sel}`;
+    if (scrolledSelection.current === key) return;
+    const frame = requestAnimationFrame(() => {
+      const selected = leftRef.current?.querySelector(".group.sel");
+      if (!selected) return;
+      selected.scrollIntoView({ block: "nearest" });
+      scrolledSelection.current = key;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [account, sel, groups]);
+
   // refresh analysis when selection/toggles change + every 3s (T+0 uses live IV/spot)
   useEffect(() => {
     if (!account || !sel) return;
@@ -632,7 +685,7 @@ function App() {
       <span class="conn ${wsOn?'on':''}"><span class="dot"></span>${wsOn?'stream live':'stream down'}</span>
     </header>
     <main>
-      <div id="left">
+      <div id="left" ref=${leftRef}>
         ${Object.entries(groups).map(([u, legs]) => {
           const q = quotes[u]?.mid != null ? quotes[u]
                   : quotes[legs[0]?.underlying_streamer] || {};
@@ -649,7 +702,7 @@ function App() {
         ${!Object.keys(groups).length && html`<div class="empty">No open positions</div>`}
       </div>
       <div id="right">
-        ${ana ? html`<${Analysis} ana=${ana} stale=${stale} sel=${sel}
+        ${ana ? html`<${Analysis} ana=${ana} stale=${stale} sel=${sel} account=${account}
                        hidden=${hiddenLegs} onToggle=${toggleCluster} />`
               : html`<div class="empty">Select a position</div>`}
       </div>
@@ -1027,7 +1080,7 @@ function ChartTip({ active, payload, curves }) {
     </div>`;
 }
 
-function Analysis({ ana, stale, sel, hidden, onToggle }) {
+function Analysis({ ana, stale, sel, account, hidden, onToggle }) {
   const data = useMemo(() => ana.grid.map((s, i) => ({
     spot: s, exp: ana.expiration_pl[i], t0: ana.t0_pl[i],
     theta: (ana.theta || [])[i] ?? 0,
@@ -1203,6 +1256,68 @@ function Analysis({ ana, stale, sel, hidden, onToggle }) {
       <div class="hdivider" onMouseDown=${dragChart}></div>
       ${ana.leg_stats ? html`<${PositionTable} stats=${ana.leg_stats} rollBasis=${ana.roll_basis}
                               hidden=${hidden} onToggle=${onToggle} spot=${ana.spot} />` : null}
+      <${AdvisorPanel} account=${account} sel=${sel} />
+    </div>`;
+}
+
+// LLM position-management analysis, run on demand. The backend builds the
+// dossier (legs, greeks, roll history, 1yr stats) and calls the provider
+// configured in .env; only the generated text reaches the browser.
+const REC_META = {
+  hold_collect_theta: { label: "hold · theta", color: "#2dd4a7" },
+  roll:               { label: "roll",         color: "#7aa5ff" },
+  adjust_directional: { label: "directional",  color: "#c084fc" },
+  cut_losses:         { label: "cut losses",   color: "#ff5d73" },
+  take_profits:       { label: "take profits", color: "#3ddc97" },
+  other:              { label: "other",        color: "#8b97a8" },
+};
+
+function AdvisorPanel({ account, sel }) {
+  const [loading, setLoading] = useState(false);
+  const [res, setRes] = useState(null);
+  const [err, setErr] = useState(null);
+  useEffect(() => { setRes(null); setErr(null); setLoading(false); }, [sel]);
+  const run = async () => {
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch(api(`/api/analyze/${account}/${sel}`), { method: "POST" });
+      const d = await r.json();
+      if (d.ok) setRes(d);
+      else setErr((d.problems || [d.detail || "analysis failed"]).join("; "));
+    } catch (e) {
+      setErr(/fetch/i.test(e.message || "")
+        ? "backend not reachable — is the app still running?"
+        : (e.message || String(e)));
+    }
+    setLoading(false);
+  };
+  return html`
+    <div class="advisor">
+      <div class="ahead">
+        <h3>Position analysis</h3>
+        ${res ? html`<span class="meta">${res.provider} · ${res.model} ·
+          ${(res.generated_at || "").replace("T", " ").slice(0, 16)}</span>` : null}
+        <button class="abtn" disabled=${loading} onClick=${run}>
+          ${loading ? "Analyzing…" : (res ? "Update analysis" : "Get analysis")}</button>
+      </div>
+      ${err ? html`<div class="prob" style=${{marginTop:'10px'}}>${err}</div>` : null}
+      ${res ? html`
+        <div class="asum">${res.summary}</div>
+        ${res.outlook ? html`<div class="aout">${res.outlook}</div>` : null}
+        ${(res.recommendations || []).map((r, i) => {
+          const m = REC_META[r.type] || REC_META.other;
+          return html`
+            <div key=${i} class="rec" style=${{borderLeftColor: m.color}}>
+              <span class="rtag" style=${{color: m.color}}>${m.label}</span>
+              <span class="rbody"><b>${r.title}</b><div>${r.details}</div></span>
+              <span class="conf">${r.confidence || ""}</span>
+            </div>`;})}
+        ${res.warnings ? html`<div class="awarn">⚠ ${res.warnings}</div>` : null}` : null}
+      ${!res && !err && !loading ? html`<div class="adisc">
+        Runs your configured LLM (set ANTHROPIC_API_KEY, OPENAI_API_KEY, or
+        GEMINI_API_KEY in the app's .env; optional LLM_PROVIDER / LLM_MODEL)
+        over the open legs, roll history, and trailing-1yr stats for ${sel}.</div>` : null}
+      <div class="adisc">AI-generated decision support, not financial advice — nothing is executed.</div>
     </div>`;
 }
 
