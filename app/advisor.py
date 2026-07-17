@@ -29,7 +29,9 @@ _KEY_VARS = {
 DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-5",
     "openai": "gpt-5.1",
-    "gemini": "gemini-2.5-flash",
+    # rolling alias: Google retires pinned models for new API users
+    # (gemini-2.5-flash 404s on fresh keys), the alias always resolves
+    "gemini": "gemini-flash-latest",
 }
 
 SYSTEM_PROMPT = """You are an expert options position manager reviewing one \
