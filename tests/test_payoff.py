@@ -113,3 +113,22 @@ def test_analysis_payload_shape():
 def test_grid_contains_spot_and_strikes():
     g = spot_grid(100.0, IC)
     assert min(g) < 90 and max(g) > 110
+
+
+def test_condor_chains_merge_into_one_curve_group():
+    # MSFT-style: 91d strangle (one chain) + protective wings (another chain)
+    # jointly form an iron condor; the chart must not split them into two
+    # phantom sub-positions (matches the table's mergeCondorGroups)
+    def mk(qty, k, t, dte, chain):
+        return Leg(qty=qty, multiplier=100, open_price=1.0, strike=k,
+                   option_type=t, dte_years=dte / 365, iv=0.4, chain=chain)
+    legs = [
+        mk(1, 310, "P", 63, 1), mk(-1, 340, "P", 63, 1),
+        mk(-1, 470, "C", 63, 1), mk(1, 510, "C", 63, 1),
+        mk(-4, 345, "P", 91, 2), mk(-4, 455, "C", 91, 2),
+        mk(4, 280, "P", 91, 3), mk(4, 520, "C", 91, 3),
+    ]
+    r = analysis(legs, 400.0)
+    # 91d merges to a single terminal group (embodied in the outer shape),
+    # leaving only the 63d curve — no 345/455 / 280/520 strike-pair labels
+    assert [c["label"] for c in r["curves"]] == ["63d"]

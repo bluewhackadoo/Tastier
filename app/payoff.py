@@ -208,6 +208,51 @@ def breakevens(spots: list[float], pl: list[float]) -> list[float]:
     return deduped
 
 
+def _is_condor_shape(ls: list[Leg]) -> bool:
+    """Four distinct strikes forming long-wings/short-body (or the reverse),
+    as an iron condor (2P+2C) or an all-put/all-call condor. Mirrors the
+    frontend's isCondorShape."""
+    if len(ls) != 4 or len({l.strike for l in ls}) != 4:
+        return False
+    if any(abs(l.qty) != abs(ls[0].qty) for l in ls):
+        return False
+    puts = sorted((l for l in ls if l.option_type == "P"), key=lambda l: l.strike)
+    calls = sorted((l for l in ls if l.option_type == "C"), key=lambda l: l.strike)
+    if len(puts) == 2 and len(calls) == 2:
+        (p_lo, p_hi), (c_lo, c_hi) = puts, calls
+        if p_lo.qty > 0 and p_hi.qty < 0 and c_lo.qty < 0 and c_hi.qty > 0:
+            return True
+        if p_lo.qty < 0 and p_hi.qty > 0 and c_lo.qty > 0 and c_hi.qty < 0:
+            return True
+    if len(puts) == 4 or len(calls) == 4:
+        signs = [1 if l.qty > 0 else -1
+                 for l in sorted(ls, key=lambda l: l.strike)]
+        if signs in ([1, -1, -1, 1], [-1, 1, 1, -1]):
+            return True
+    return False
+
+
+def _merge_condor_groups(groups: list[list[Leg]]) -> list[list[Leg]]:
+    """Pairwise-merge chain groups that together form a condor shape
+    (frontend mergeCondorGroups, ported)."""
+    merged: list[list[Leg]] = []
+    used: set[int] = set()
+    for i, g1 in enumerate(groups):
+        if i in used:
+            continue
+        partner = -1
+        for j in range(i + 1, len(groups)):
+            if j not in used and _is_condor_shape(g1 + groups[j]):
+                partner = j
+                break
+        if partner >= 0:
+            merged.append(g1 + groups[partner])
+            used.update((i, partner))
+        else:
+            merged.append(g1)
+    return merged
+
+
 def analysis(legs: list[Leg], spot: float) -> dict:
     """Full payload for the frontend graph.
 
@@ -227,9 +272,12 @@ def analysis(legs: list[Leg], spot: float) -> dict:
     # Each sub-position's OWN intrinsic payoff — grouped by expiration AND
     # order chain (how the legs were actually traded), so e.g. a put vertical
     # and a call vertical opened separately on the same expiry stay two
-    # shapes. Returned as `curves`, each drawn as its own green shade. When
-    # the terminal expiration holds a single group it is embodied in the
-    # combined expiration_pl outer shape and not repeated.
+    # shapes. Chain groups that jointly form a condor merge back into one
+    # (mirrors the frontend's mergeCondorGroups so the chart's sub-shapes
+    # match the position table: a rolled strangle plus later protective wings
+    # reads as one iron condor, not two phantom positions). When the terminal
+    # expiration holds a single group it is embodied in the combined
+    # expiration_pl outer shape and not repeated.
     by_dte: dict[int, list[Leg]] = {}
     for l in legs:
         if l.strike is not None:
@@ -237,12 +285,12 @@ def analysis(legs: list[Leg], spot: float) -> dict:
     groups: list[tuple[int, list[Leg]]] = []
     for d in sorted(by_dte):
         dl = by_dte[d]
-        # split by chain only when every leg of this expiry is chain-tagged
-        if all(l.chain is not None for l in dl) and len({l.chain for l in dl}) > 1:
-            for c in sorted({l.chain for l in dl}):
-                groups.append((d, [l for l in dl if l.chain == c]))
-        else:
-            groups.append((d, dl))
+        by_chain: dict[object, list[Leg]] = {}
+        for l in dl:
+            by_chain.setdefault(l.chain, []).append(l)
+        merged = _merge_condor_groups(list(by_chain.values()))
+        for gl in merged:
+            groups.append((d, gl))
     term_d = groups[-1][0] if groups else 0
     n_term = sum(1 for d, _ in groups if d == term_d)
     curves = []
