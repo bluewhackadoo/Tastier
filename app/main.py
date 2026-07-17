@@ -122,7 +122,8 @@ async def index() -> FileResponse:
 async def health() -> dict:
     problems = settings.validate()
     return {"ok": not problems, "env": settings.tt_env, "problems": problems,
-            "llm": advisor.provider_status()}  # provider/model or what's missing
+            "llm": {**advisor.provider_status(),           # default pick
+                    "available": advisor.providers_available()}}
 
 
 @app.get("/api/setup/validate")
@@ -320,10 +321,28 @@ def _leg_stats(legs_raw: list[dict], spot: float) -> list[dict]:
 _logo_mem: dict[str, bytes | None] = {}  # symbol -> svg bytes, or None = no logo
 
 
+@app.get("/api/llm/models/{provider}")
+async def llm_models(provider: str) -> dict:
+    """Curated + API-discovered models available for the given provider.
+    Falls back to the curated list if the API key is missing or invalid."""
+    provider = provider.strip().lower()
+    if provider not in advisor.PROVIDERS:
+        raise HTTPException(400, f"unknown provider '{provider}'")
+    return {"provider": provider, "models": await advisor.provider_models(provider),
+            "default": advisor.DEFAULT_MODELS[provider]}
+
+
 @app.post("/api/analyze/{account_number}/{underlying:path}")
-async def analyze_position(account_number: str, underlying: str) -> dict:
+async def analyze_position(account_number: str, underlying: str,
+                           provider: str = "", model: str = "") -> dict:
     """On-demand LLM analysis of one underlying's open position. Advisory
-    text only — this app has no order endpoints and none are added here."""
+    text only — this app has no order endpoints and none are added here.
+    `provider` optionally forces anthropic/openai/gemini for comparison;
+    `model` optionally selects a specific model from that provider."""
+    provider = provider.strip().lower()
+    model = model.strip()
+    if provider and provider not in advisor.PROVIDERS:
+        raise HTTPException(400, f"unknown provider '{provider}'")
     legs_raw = [l for l in _legs_cache.get(account_number, [])
                 if l["underlying"] == underlying]
     if not legs_raw:
@@ -367,7 +386,7 @@ async def analyze_position(account_number: str, underlying: str) -> dict:
     log.info("advisor: analyzing %s (%d legs, %d roll-chain entries)",
              underlying, len(stats), len(dossier["roll_history"]))
     try:
-        result = await advisor.analyze(dossier)
+        result = await advisor.analyze(dossier, provider or None, model or None)
     except RuntimeError as exc:
         log.warning("advisor: %s failed — %s", underlying, exc)
         return {"ok": False, "problems": [str(exc)]}
