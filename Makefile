@@ -1,7 +1,7 @@
 .PHONY: run check test test-e2e build
 
 run:
-	uvicorn app.main:app --host 127.0.0.1 --port 8420
+	uvicorn app.main:app --host 127.0.0.1 --port 8420 --reload
 
 build:
 	pip install -r requirements-build.txt
