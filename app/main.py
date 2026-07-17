@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from functools import reduce
@@ -21,8 +22,31 @@ from .tasty import (fetch_logo, fetch_order_chains, fetch_positions,
                     list_accounts, reset_session)
 
 
+log = logging.getLogger("tastier")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # app-level logging (uvicorn only configures its own loggers);
+    # LOG_LEVEL=DEBUG in .env or the environment for more detail
+    level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=level, format="%(levelname)s:     %(name)s - %(message)s")
+    if level != "DEBUG":  # these two are very chatty at their own levels
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("tastytrade").setLevel(logging.INFO)
+    from .config import ENV_PATH
+    log.info("config dir: %s (.env %s)", CONFIG_DIR,
+             "found" if ENV_PATH.exists() else "MISSING")
+    log.info("tastytrade creds: TT_SECRET=%s TT_REFRESH=%s TT_ENV=%s",
+             "set" if settings.tt_secret else "MISSING",
+             "set" if settings.tt_refresh else "MISSING", settings.tt_env)
+    st = advisor.provider_status()
+    if st.get("provider"):
+        log.info("LLM advisor: provider=%s model=%s", st["provider"], st["model"])
+    else:
+        log.info("LLM advisor: disabled — %s", st.get("missing"))
+    log.info("note: .env is read at process start; restart after editing it")
     yield
     await relay.stop()  # tear down the DXLink relay on shutdown
 
@@ -63,7 +87,8 @@ async def index() -> FileResponse:
 @app.get("/api/health")
 async def health() -> dict:
     problems = settings.validate()
-    return {"ok": not problems, "env": settings.tt_env, "problems": problems}
+    return {"ok": not problems, "env": settings.tt_env, "problems": problems,
+            "llm": advisor.provider_status()}  # provider/model or what's missing
 
 
 @app.get("/api/setup/validate")
@@ -305,10 +330,16 @@ async def analyze_position(account_number: str, underlying: str) -> dict:
         "roll_history": await _roll_basis(account_number, underlying, legs_raw),
         "trailing_1yr": year,
     }
+    log.info("advisor: analyzing %s (%d legs, %d roll-chain entries)",
+             underlying, len(stats), len(dossier["roll_history"]))
     try:
         result = await advisor.analyze(dossier)
     except RuntimeError as exc:
+        log.warning("advisor: %s failed — %s", underlying, exc)
         return {"ok": False, "problems": [str(exc)]}
+    log.info("advisor: %s done via %s/%s (%d recommendations)", underlying,
+             result.get("provider"), result.get("model"),
+             len(result.get("recommendations", [])))
     result["ok"] = True
     result["generated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return result
