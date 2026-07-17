@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from functools import reduce
@@ -58,6 +60,35 @@ STATIC = ROOT / "static"
 # Release binaries run from a read-only temp folder; keep the logo cache in
 # the same per-user config directory that holds the .env file.
 LOGO_DIR = CONFIG_DIR / "logos"
+# saved advisor runs, one JSON file per account+underlying (newest first)
+ANALYSES_DIR = CONFIG_DIR / "analyses"
+ANALYSES_KEEP = 30
+
+
+def _analyses_file(account_number: str, underlying: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", f"{account_number}_{underlying}")
+    return ANALYSES_DIR / f"{safe}.json"
+
+
+def _load_analyses(account_number: str, underlying: str) -> list[dict]:
+    f = _analyses_file(account_number, underlying)
+    if f.exists():
+        try:
+            hist = json.loads(f.read_text(encoding="utf-8"))
+            if isinstance(hist, list):
+                return hist
+        except Exception:
+            log.warning("analyses: unreadable history file %s", f)
+    return []
+
+
+def _save_analysis(account_number: str, underlying: str, result: dict) -> None:
+    hist = _load_analyses(account_number, underlying)
+    hist.insert(0, result)
+    del hist[ANALYSES_KEEP:]
+    ANALYSES_DIR.mkdir(parents=True, exist_ok=True)
+    _analyses_file(account_number, underlying).write_text(
+        json.dumps(hist), encoding="utf-8")
 
 # in-memory cache of last-fetched legs per account (source of truth = tasty)
 _legs_cache: dict[str, list[dict]] = {}
@@ -81,7 +112,10 @@ async def _order_chains(account_number: str, underlying: str) -> dict[str, int]:
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(STATIC / "index.html")
+    # no-cache = always revalidate (cheap 304 when unchanged); stale cached
+    # copies of this single-file app have repeatedly masked fresh deploys
+    return FileResponse(STATIC / "index.html",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/health")
@@ -342,7 +376,16 @@ async def analyze_position(account_number: str, underlying: str) -> dict:
              len(result.get("recommendations", [])))
     result["ok"] = True
     result["generated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    result["spot_at_run"] = spot
+    result["live_pl_at_run"] = pa.get("live_pl")
+    _save_analysis(account_number, underlying, result)
     return result
+
+
+@app.get("/api/analyses/{account_number}/{underlying:path}")
+async def analyses_history(account_number: str, underlying: str) -> list[dict]:
+    """Saved advisor runs for an underlying, newest first."""
+    return _load_analyses(account_number, underlying)
 
 
 @app.get("/api/logo/{symbol}")

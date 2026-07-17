@@ -87,6 +87,8 @@
   .advisor .ahead h3 { margin: 0; font: 600 12px var(--mono); letter-spacing: .07em;
                        text-transform: uppercase; color: var(--dim); }
   .advisor .meta { margin-left: auto; font: 11px var(--mono); color: var(--dim); }
+  select.ahist { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+                 border-radius: 5px; font: 11px var(--mono); padding: 4px 6px; }
   button.abtn { background: #1f6f4e; color: #fff; border: 0; border-radius: 6px;
                 padding: 6px 14px; cursor: pointer; font-size: 12px; font-weight: 600; }
   button.abtn:hover { background: #27865f; }
@@ -1274,15 +1276,27 @@ const REC_META = {
 
 function AdvisorPanel({ account, sel }) {
   const [loading, setLoading] = useState(false);
-  const [res, setRes] = useState(null);
+  const [hist, setHist] = useState([]);   // saved runs, newest first
+  const [idx, setIdx] = useState(0);      // which run is displayed
   const [err, setErr] = useState(null);
-  useEffect(() => { setRes(null); setErr(null); setLoading(false); }, [sel]);
+  const res = hist[idx] || null;
+  // load saved history so a refresh / new browser shows the last run
+  useEffect(() => {
+    setHist([]); setIdx(0); setErr(null); setLoading(false);
+    if (!account || !sel) return;
+    let alive = true;
+    fetch(api(`/api/analyses/${account}/${sel}`))
+      .then(r => r.ok ? r.json() : [])
+      .then(h => { if (alive && Array.isArray(h)) setHist(h); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [account, sel]);
   const run = async () => {
     setLoading(true); setErr(null);
     try {
       const r = await fetch(api(`/api/analyze/${account}/${sel}`), { method: "POST" });
       const d = await r.json();
-      if (d.ok) setRes(d);
+      if (d.ok) { setHist(h => [d, ...h]); setIdx(0); }
       else setErr((d.problems || [d.detail || "analysis failed"]).join("; "));
     } catch (e) {
       setErr(/fetch/i.test(e.message || "")
@@ -1291,12 +1305,16 @@ function AdvisorPanel({ account, sel }) {
     }
     setLoading(false);
   };
+  const ts = h => (h.generated_at || "").replace("T", " ").slice(0, 16);
   return html`
     <div class="advisor">
       <div class="ahead">
         <h3>Position analysis</h3>
-        ${res ? html`<span class="meta">${res.provider} · ${res.model} ·
-          ${(res.generated_at || "").replace("T", " ").slice(0, 16)}</span>` : null}
+        ${res ? html`<span class="meta">${`${res.provider} · ${res.model} · ${ts(res)}${idx > 0 ? " (older run)" : ""}`}</span>` : null}
+        ${hist.length > 1 ? html`
+          <select class="ahist" value=${idx} onChange=${e => setIdx(+e.target.value)}>
+            ${hist.map((h, i) => html`<option key=${i} value=${i}>${ts(h)}${i === 0 ? " · latest" : ""}</option>`)}
+          </select>` : null}
         <button class="abtn" disabled=${loading} onClick=${run}>
           ${loading ? "Analyzing…" : (res ? "Update analysis" : "Get analysis")}</button>
       </div>
