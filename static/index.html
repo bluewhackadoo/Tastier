@@ -1355,8 +1355,8 @@ const REC_META = {
   other:              { label: "other",        color: "#8b97a8" },
 };
 
-const LLM_LABELS = { anthropic: "Claude", openai: "OpenAI", gemini: "Gemini" };
-const LLM_ORDER = ["anthropic", "openai", "gemini"];
+const LLM_LABELS = { anthropic: "Claude", openai: "OpenAI", gemini: "Gemini", deepseek: "DeepSeek", kimi: "Kimi" };
+const LLM_ORDER = ["anthropic", "openai", "gemini", "deepseek", "kimi"];
 
 function AdvisorPanel({ account, sel }) {
   const [loading, setLoading] = useState(false);
@@ -1416,10 +1416,20 @@ function AdvisorPanel({ account, sel }) {
     let alive = true;
     fetch(api(`/api/analyses/${account}/${sel}`))
       .then(r => r.ok ? r.json() : [])
-      .then(h => { if (alive && Array.isArray(h)) setHist(h); })
+      .then(h => {
+        if (!alive || !Array.isArray(h)) return;
+        setHist(h);
+        // when switching positions, always surface the latest available run
+        // regardless of which provider/model was selected before
+        if (h.length && avail[h[0].provider]) {
+          setProv(h[0].provider);
+          setModel(h[0].model);
+          setIdx(0);
+        }
+      })
       .catch(() => {});
     return () => { alive = false; };
-  }, [account, sel]);
+  }, [account, sel, avail]);
   const run = async () => {
     setLoading(true); setErr(null);
     try {
@@ -1438,7 +1448,15 @@ function AdvisorPanel({ account, sel }) {
     }
     setLoading(false);
   };
-  const ts = h => (h.generated_at || "").replace("T", " ").slice(0, 16);
+  const ts = h => {
+    const g = h && h.generated_at;
+    if (!g) return "";
+    try {
+      return new Date(g).toLocaleString(undefined, {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+      });
+    } catch { return g.replace("T", " ").slice(0, 16); }
+  };
   const toBullets = text => {
     if (!text) return [];
     if (Array.isArray(text)) return text.filter(Boolean);
