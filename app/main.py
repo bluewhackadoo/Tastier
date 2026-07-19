@@ -337,7 +337,7 @@ async def analyze_position(account_number: str, underlying: str,
                            provider: str = "", model: str = "") -> dict:
     """On-demand LLM analysis of one underlying's open position. Advisory
     text only — this app has no order endpoints and none are added here.
-    `provider` optionally forces anthropic/openai/gemini for comparison;
+    `provider` optionally forces anthropic/openai/gemini/deepseek/kimi for comparison;
     `model` optionally selects a specific model from that provider."""
     provider = provider.strip().lower()
     model = model.strip()

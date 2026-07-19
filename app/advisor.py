@@ -5,8 +5,9 @@ configured LLM for management suggestions. API keys live in the same local
 .env as the tastytrade credentials and never reach the browser — only the
 generated text does. No trading endpoints exist and none are added here.
 
-Provider selection: LLM_PROVIDER=anthropic|openai|gemini in .env, else the
-first of ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY that is set.
+Provider selection: LLM_PROVIDER=anthropic|openai|gemini|deepseek|kimi in .env,
+else the first of ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY /
+DEEPSEEK_API_KEY / KIMI_API_KEY that is set.
 Model override: LLM_MODEL. (GitHub Copilot has no public completions API,
 so it isn't offered.)
 """
@@ -16,15 +17,21 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
 
-PROVIDERS = ("anthropic", "openai", "gemini")
+from .config import ENV_DIR
+
+PROVIDERS = ("anthropic", "openai", "gemini", "deepseek", "kimi")
 _KEY_VARS = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "kimi": "KIMI_API_KEY",
 }
 DEFAULT_MODELS = {
     "anthropic": "claude-3-5-sonnet-20241022",
@@ -32,6 +39,8 @@ DEFAULT_MODELS = {
     # Google rolling alias: pinned versions (e.g. gemini-2.5-flash) often
     # 404 for newer API keys, while gemini-flash-latest resolves correctly.
     "gemini": "gemini-flash-latest",
+    "deepseek": "deepseek-chat",
+    "kimi": "moonshot-v1-8k",
 }
 # Curated, known-good models shown in the UI. The provider's actual API key
 # may grant access to only a subset; provider_models() tries to narrow this.
@@ -54,6 +63,15 @@ MODEL_OPTIONS = {
         "gemini-1.5-flash-latest",
         "gemini-1.5-pro",
         "gemini-1.5-pro-latest",
+    ],
+    "deepseek": [
+        "deepseek-chat",
+        "deepseek-reasoner",
+    ],
+    "kimi": [
+        "moonshot-v1-8k",
+        "moonshot-v1-32k",
+        "moonshot-v1-128k",
     ],
 }
 # Approximate pricing in USD per 1M tokens (input / output). Used to sort the
@@ -79,9 +97,31 @@ MODEL_PRICING = {
         "gemini-1.5-pro": {"input": 1.25, "output": 5.00},
         "gemini-1.5-pro-latest": {"input": 1.25, "output": 5.00},
     },
+    "deepseek": {
+        "deepseek-chat": {"input": 0.27, "output": 1.10},
+        "deepseek-reasoner": {"input": 0.55, "output": 2.19},
+    },
+    "kimi": {
+        # Moonshot AI pricing is CNY-based; these USD figures are approximate.
+        "moonshot-v1-8k": {"input": 1.00, "output": 1.00},
+        "moonshot-v1-32k": {"input": 2.00, "output": 2.00},
+        "moonshot-v1-128k": {"input": 4.00, "output": 4.00},
+    },
 }
 
-SYSTEM_PROMPT = """You are an expert options position manager reviewing one \
+def _app_root() -> Path:
+    """Resolve the directory holding this module, including inside a PyInstaller
+    one-file/one-dir bundle where datas are extracted to sys._MEIPASS."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "app"
+    return Path(__file__).resolve().parent
+
+
+# User-editable override lives next to their .env. If it exists, it wins.
+_USER_PROMPT_FILE = ENV_DIR / "prompts" / "position_analysis.md"
+_BUNDLED_PROMPT_FILE = _app_root() / "prompts" / "position_analysis.md"
+
+_DEFAULT_SYSTEM_PROMPT = """You are an expert options position manager reviewing one \
 underlying's open position for a retail trader who runs premium-selling and \
 defined-risk strategies. You receive a dossier: current legs with greeks and \
 marks, strategy grouping, roll history, live P/L, and trailing-1-year trading \
@@ -120,6 +160,18 @@ cutting losses or taking profits beats managing. This is decision support,
 not an order — never assume execution."""
 
 
+def _load_system_prompt() -> str:
+    """Load the editable prompt file, falling back to the bundled copy or the
+    inline default."""
+    for path in (_USER_PROMPT_FILE, _BUNDLED_PROMPT_FILE):
+        if path.exists():
+            try:
+                return path.read_text(encoding="utf-8")
+            except Exception:
+                pass
+    return _DEFAULT_SYSTEM_PROMPT
+
+
 def providers_available() -> dict:
     """Key presence per provider (never the keys themselves)."""
     return {p: bool(os.environ.get(_KEY_VARS[p])) for p in PROVIDERS}
@@ -140,8 +192,8 @@ def provider_status(force: str | None = None, model: str | None = None) -> dict:
             return {"provider": p, "model": _model(p, model)}
     return {"provider": None,
             "missing": "no LLM API key in .env — set ANTHROPIC_API_KEY, "
-                       "OPENAI_API_KEY, or GEMINI_API_KEY (and optionally "
-                       "LLM_PROVIDER / LLM_MODEL)"}
+                       "OPENAI_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY, "
+                       "or KIMI_API_KEY (and optionally LLM_PROVIDER / LLM_MODEL)"}
 
 
 def _model_info(provider: str, model_id: str) -> dict:
@@ -184,7 +236,7 @@ async def provider_models(provider: str) -> list[dict]:
                         headers={"Authorization": f"Bearer {key}"})
                     r.raise_for_status()
                     ids = [m["id"] for m in r.json().get("data", [])]
-                else:  # gemini
+                elif p == "gemini":
                     r = await client.get(
                         "https://generativelanguage.googleapis.com/v1beta/models",
                         params={"key": key})
@@ -192,6 +244,18 @@ async def provider_models(provider: str) -> list[dict]:
                     ids = [m["name"].split("/")[-1]
                            for m in r.json().get("models", [])
                            if "generateContent" in m.get("supportedGenerationMethods", [])]
+                elif p == "deepseek":
+                    r = await client.get(
+                        "https://api.deepseek.com/models",
+                        headers={"Authorization": f"Bearer {key}"})
+                    r.raise_for_status()
+                    ids = [m["id"] for m in r.json().get("data", [])]
+                else:  # kimi
+                    r = await client.get(
+                        "https://api.moonshot.cn/v1/models",
+                        headers={"Authorization": f"Bearer {key}"})
+                    r.raise_for_status()
+                    ids = [m["id"] for m in r.json().get("data", [])]
         except Exception:
             ids = []
     if not ids:
@@ -249,7 +313,7 @@ async def analyze(dossier: dict, provider: str | None = None,
                     headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"],
                              "anthropic-version": "2023-06-01"},
                     json={"model": model, "max_tokens": 8000,
-                          "system": SYSTEM_PROMPT,
+                          "system": _load_system_prompt(),
                           "messages": [{"role": "user", "content": user_msg}]})
                 r.raise_for_status()
                 data = r.json()
@@ -264,7 +328,25 @@ async def analyze(dossier: dict, provider: str | None = None,
                     "https://api.openai.com/v1/chat/completions",
                     headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
                     json={"model": model,
-                          "messages": [{"role": "system", "content": SYSTEM_PROMPT},
+                          "messages": [{"role": "system", "content": _load_system_prompt()},
+                                       {"role": "user", "content": user_msg}]})
+                r.raise_for_status()
+                text = r.json()["choices"][0]["message"]["content"]
+            elif provider == "deepseek":
+                r = await client.post(
+                    "https://api.deepseek.com/chat/completions",
+                    headers={"Authorization": f"Bearer {os.environ['DEEPSEEK_API_KEY']}"},
+                    json={"model": model,
+                          "messages": [{"role": "system", "content": _load_system_prompt()},
+                                       {"role": "user", "content": user_msg}]})
+                r.raise_for_status()
+                text = r.json()["choices"][0]["message"]["content"]
+            elif provider == "kimi":
+                r = await client.post(
+                    "https://api.moonshot.cn/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {os.environ['KIMI_API_KEY']}"},
+                    json={"model": model,
+                          "messages": [{"role": "system", "content": _load_system_prompt()},
                                        {"role": "user", "content": user_msg}]})
                 r.raise_for_status()
                 text = r.json()["choices"][0]["message"]["content"]
@@ -272,7 +354,7 @@ async def analyze(dossier: dict, provider: str | None = None,
                 r = await client.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                     params={"key": os.environ["GEMINI_API_KEY"]},
-                    json={"systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                    json={"systemInstruction": {"parts": [{"text": _load_system_prompt()}]},
                           "contents": [{"role": "user", "parts": [{"text": user_msg}]}]})
                 r.raise_for_status()
                 text = "".join(p.get("text", "")
