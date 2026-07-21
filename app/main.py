@@ -48,6 +48,9 @@ async def lifespan(app: FastAPI):
         log.info("LLM advisor: provider=%s model=%s", st["provider"], st["model"])
     else:
         log.info("LLM advisor: disabled — %s", st.get("missing"))
+    # Refresh provider model lists and any user pricing overrides so the UI
+    # dropdowns are current without waiting for the first request.
+    await advisor.refresh_models_and_pricing()
     log.info("note: .env is read at process start; restart after editing it")
     yield
     await relay.stop()  # tear down the DXLink relay on shutdown

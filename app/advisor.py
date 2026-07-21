@@ -31,7 +31,8 @@ _KEY_VARS = {
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
-    "kimi": "KIMI_API_KEY",
+    # Moonshot's docs use MOONSHOT_API_KEY; accept KIMI_API_KEY too.
+    "kimi": ("KIMI_API_KEY", "MOONSHOT_API_KEY"),
 }
 DEFAULT_MODELS = {
     "anthropic": "claude-3-5-sonnet-20241022",
@@ -109,6 +110,32 @@ MODEL_PRICING = {
     },
 }
 
+# Filled at startup by refresh_models_and_pricing(); keyed by provider name.
+_MODEL_CACHE: dict[str, list[dict]] = {}
+
+
+def _load_pricing_overrides() -> None:
+    """Merge user-supplied pricing from <env dir>/pricing/models_pricing.json
+    into MODEL_PRICING. This lets you tune prices without rebuilding the app."""
+    path = ENV_DIR / "pricing" / "models_pricing.json"
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for provider, models in data.items():
+            if provider not in MODEL_PRICING:
+                MODEL_PRICING[provider] = {}
+            for model_id, prices in models.items():
+                if isinstance(prices, dict) and "input" in prices and "output" in prices:
+                    MODEL_PRICING[provider][model_id] = {
+                        "input": float(prices["input"]),
+                        "output": float(prices["output"]),
+                    }
+    except Exception:
+        # Pricing overrides are optional; a bad file should not block startup.
+        pass
+
+
 def _app_root() -> Path:
     """Resolve the directory holding this module, including inside a PyInstaller
     one-file/one-dir bundle where datas are extracted to sys._MEIPASS."""
@@ -160,6 +187,25 @@ cutting losses or taking profits beats managing. This is decision support,
 not an order — never assume execution."""
 
 
+def _provider_key(provider: str) -> str | None:
+    """Return the first configured API key for a provider, stripped of
+    whitespace and optional surrounding quotes. Supports a tuple of candidate
+    env var names for backwards/forwards compatibility."""
+    keys = _KEY_VARS.get(provider)
+    if not keys:
+        return None
+    candidates = keys if isinstance(keys, tuple) else (keys,)
+    for var in candidates:
+        value = os.environ.get(var)
+        if value:
+            value = value.strip()
+            if (value.startswith('"') and value.endswith('"')) or \
+               (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+            return value
+    return None
+
+
 def _load_system_prompt() -> str:
     """Load the editable prompt file, falling back to the bundled copy or the
     inline default."""
@@ -174,7 +220,7 @@ def _load_system_prompt() -> str:
 
 def providers_available() -> dict:
     """Key presence per provider (never the keys themselves)."""
-    return {p: bool(os.environ.get(_KEY_VARS[p])) for p in PROVIDERS}
+    return {p: bool(_provider_key(p)) for p in PROVIDERS}
 
 
 def provider_status(force: str | None = None, model: str | None = None) -> dict:
@@ -183,17 +229,18 @@ def provider_status(force: str | None = None, model: str | None = None) -> dict:
     overrides the LLM_MODEL env default."""
     forced = (force or os.environ.get("LLM_PROVIDER", "")).strip().lower()
     if forced and forced in PROVIDERS:
-        if os.environ.get(_KEY_VARS[forced]):
+        if _provider_key(forced):
             return {"provider": forced, "model": _model(forced, model)}
         return {"provider": None,
-                "missing": f"LLM_PROVIDER={forced} but {_KEY_VARS[forced]} is not set in .env"}
+                "missing": f"LLM_PROVIDER={forced} but the key is not set in .env"}
     for p in PROVIDERS:
-        if os.environ.get(_KEY_VARS[p]):
+        if _provider_key(p):
             return {"provider": p, "model": _model(p, model)}
     return {"provider": None,
             "missing": "no LLM API key in .env — set ANTHROPIC_API_KEY, "
                        "OPENAI_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY, "
-                       "or KIMI_API_KEY (and optionally LLM_PROVIDER / LLM_MODEL)"}
+                       "KIMI_API_KEY, or MOONSHOT_API_KEY "
+                       "(and optionally LLM_PROVIDER / LLM_MODEL)"}
 
 
 def _model_info(provider: str, model_id: str) -> dict:
@@ -214,12 +261,15 @@ def _model_info(provider: str, model_id: str) -> dict:
 async def provider_models(provider: str) -> list[dict]:
     """Return models available for a provider, sorted by total cost per 1M
     tokens (cheapest first). Tries the provider's API when the key is present;
-    on any failure returns the curated fallback."""
+    on any failure returns the curated fallback. Results are cached for the
+    process lifetime after the first successful fetch."""
     p = provider.strip().lower()
     if p not in PROVIDERS:
         raise ValueError(f"unknown provider '{provider}'")
+    if p in _MODEL_CACHE:
+        return _MODEL_CACHE[p]
     fallback_ids = list(MODEL_OPTIONS[p])
-    key = os.environ.get(_KEY_VARS[p])
+    key = _provider_key(p)
     ids = []
     if key:
         try:
@@ -251,8 +301,9 @@ async def provider_models(provider: str) -> list[dict]:
                     r.raise_for_status()
                     ids = [m["id"] for m in r.json().get("data", [])]
                 else:  # kimi
+                    base = os.environ.get("KIMI_BASE_URL", "https://api.moonshot.ai/v1").rstrip("/")
                     r = await client.get(
-                        "https://api.moonshot.cn/v1/models",
+                        f"{base}/models",
                         headers={"Authorization": f"Bearer {key}"})
                     r.raise_for_status()
                     ids = [m["id"] for m in r.json().get("data", [])]
@@ -266,7 +317,27 @@ async def provider_models(provider: str) -> list[dict]:
     ordered_ids += [m for m in ids if m not in fallback_ids]
     infos = [_model_info(p, m) for m in ordered_ids]
     infos.sort(key=lambda x: (x["total"] is None, x["total"] or 0, x["id"]))
+    # Update the curated list with anything new discovered from the API.
+    MODEL_OPTIONS[p] = [info["id"] for info in infos]
+    _MODEL_CACHE[p] = infos
     return infos
+
+
+async def refresh_models_and_pricing() -> None:
+    """Populate model caches and pricing at startup. For every provider with a
+    key, ask its API for the current model list so the UI dropdowns are fresh.
+    Pricing is loaded from the bundled defaults plus an optional user override
+    file in <env dir>/pricing/models_pricing.json."""
+    _load_pricing_overrides()
+    for p in PROVIDERS:
+        if not _provider_key(p):
+            continue
+        try:
+            await provider_models(p)
+        except Exception:
+            # Keep the hardcoded fallback; network/model-list failures are not
+            # fatal at startup.
+            pass
 
 
 def _model(provider: str, model: str | None = None) -> str:
@@ -342,9 +413,10 @@ async def analyze(dossier: dict, provider: str | None = None,
                 r.raise_for_status()
                 text = r.json()["choices"][0]["message"]["content"]
             elif provider == "kimi":
+                base = os.environ.get("KIMI_BASE_URL", "https://api.moonshot.ai/v1").rstrip("/")
                 r = await client.post(
-                    "https://api.moonshot.cn/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {os.environ['KIMI_API_KEY']}"},
+                    f"{base}/chat/completions",
+                    headers={"Authorization": f"Bearer {_provider_key('kimi')}"},
                     json={"model": model,
                           "messages": [{"role": "system", "content": _load_system_prompt()},
                                        {"role": "user", "content": user_msg}]})

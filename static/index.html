@@ -87,6 +87,7 @@
   .advisor .ahead h3 { margin: 0; font: 600 12px var(--mono); letter-spacing: .07em;
                        text-transform: uppercase; color: var(--dim); }
   .advisor .meta { margin-left: auto; font: 11px var(--mono); color: var(--dim); }
+  .llmdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
   select.ahist, select.aprov { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
                  border-radius: 5px; font: 11px var(--mono); padding: 4px 6px; }
   select.aprov option:disabled { color: var(--dim); opacity: .5; }
@@ -1356,6 +1357,13 @@ const REC_META = {
 };
 
 const LLM_LABELS = { anthropic: "Claude", openai: "OpenAI", gemini: "Gemini", deepseek: "DeepSeek", kimi: "Kimi" };
+const LLM_META = {
+  anthropic: { icon: "🅰", color: "#c4a1e7" },
+  openai:    { icon: "⚡", color: "#10a37f" },
+  gemini:    { icon: "♦", color: "#4285f4" },
+  deepseek:  { icon: "🐋", color: "#4f6ef7" },
+  kimi:      { icon: "🌙", color: "#a78bfa" },
+};
 const LLM_ORDER = ["anthropic", "openai", "gemini", "deepseek", "kimi"];
 
 function AdvisorPanel({ account, sel }) {
@@ -1367,11 +1375,7 @@ function AdvisorPanel({ account, sel }) {
   const [prov, setProv] = useState("");   // selected provider name
   const [models, setModels] = useState([]); // valid models for selected provider
   const [model, setModel] = useState("");   // selected model name
-  // show only the selected provider's runs; switching LLMs jumps to that
-  // LLM's latest cached run (or an empty "hasn't run yet" view)
-  const provHist = prov ? hist.filter(h => h.provider === prov) : hist;
-  const res = provHist[idx] || null;
-  useEffect(() => { setIdx(0); }, [prov]);
+  const res = idx >= 0 ? hist[idx] : null;
   // fetch the models the selected provider can actually use
   useEffect(() => {
     if (!prov || !avail[prov]) { setModels([]); setModel(""); return; }
@@ -1452,9 +1456,15 @@ function AdvisorPanel({ account, sel }) {
     const g = h && h.generated_at;
     if (!g) return "";
     try {
-      return new Date(g).toLocaleString(undefined, {
-        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-      });
+      const d = new Date(g);
+      const weekday = d.toLocaleDateString("en-US", { weekday: "short" });
+      const month = d.getMonth() + 1;
+      const day = d.getDate();
+      const h24 = d.getHours();
+      const m = d.getMinutes().toString().padStart(2, "0");
+      const ampm = h24 >= 12 ? "pm" : "am";
+      const h12 = h24 % 12 || 12;
+      return `(${weekday} ${month}/${day}, ${h12}:${m}${ampm})`;
     } catch { return g.replace("T", " ").slice(0, 16); }
   };
   const toBullets = text => {
@@ -1484,10 +1494,18 @@ function AdvisorPanel({ account, sel }) {
     <div class="advisor">
       <div class="ahead">
         <h3>Position analysis</h3>
-        <select class="aprov" value=${prov} onChange=${e => setProv(e.target.value)}>
+        ${prov && LLM_META[prov] ? html`<span class="llmdot" style=${{ background: LLM_META[prov].color }} title=${LLM_LABELS[prov]}></span>` : null}
+        <select class="aprov" value=${prov} onChange=${e => {
+          const p = e.target.value;
+          if (p === prov) return;
+          setProv(p);
+          const i = hist.findIndex(h => h.provider === p);
+          setIdx(i >= 0 ? i : -1);
+          if (i >= 0) setModel(hist[i].model);
+        }}>
           ${LLM_ORDER.map(p => html`
             <option key=${p} value=${p} disabled=${!avail[p]}>
-              ${LLM_LABELS[p]}${avail[p] ? "" : " (no key)"}</option>`)}
+              ${LLM_META[p].icon} ${LLM_LABELS[p]}${avail[p] ? "" : " (no key)"}</option>`)}
         </select>
         ${prov && avail[prov] && models.length ? html`
           <select class="aprov" value=${model} onChange=${e => setModel(e.target.value)}>
@@ -1497,10 +1515,16 @@ function AdvisorPanel({ account, sel }) {
                 : ""}${m.recommended ? " · default" : ""}
             </option>`)}
           </select>` : null}
-        ${res ? html`<span class="meta">${`${res.provider} · ${res.model} · ${ts(res)}${idx > 0 ? " (older run)" : ""}`}</span>` : null}
-        ${provHist.length > 1 ? html`
-          <select class="ahist" value=${idx} onChange=${e => setIdx(+e.target.value)}>
-            ${provHist.map((h, i) => html`<option key=${i} value=${i}>${ts(h)}${i === 0 ? " · latest" : ""}</option>`)}
+        ${res ? html`
+          <select class="meta ahist" value=${idx} onChange=${e => {
+            const i = +e.target.value;
+            setIdx(i);
+            if (hist[i]) {
+              setProv(hist[i].provider);
+              setModel(hist[i].model);
+            }
+          }}>
+            ${hist.map((h, i) => html`<option key=${i} value=${i}>${LLM_META[h.provider]?.icon || ""} ${ts(h)} · ${h.model}${i === 0 ? " · latest" : ""}</option>`)}
           </select>` : null}
         <button class="abtn" disabled=${loading} onClick=${run}>
           ${loading ? "Analyzing…" : (res ? "Update analysis" : "Get analysis")}</button>

@@ -27,7 +27,8 @@ def test_parse_rejects_no_json():
 
 def test_provider_status_no_keys(monkeypatch):
     for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
-                "DEEPSEEK_API_KEY", "KIMI_API_KEY", "LLM_PROVIDER"):
+                "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY",
+                "LLM_PROVIDER"):
         monkeypatch.delenv(var, raising=False)
     st = provider_status()
     assert st["provider"] is None and "API key" in st["missing"]
