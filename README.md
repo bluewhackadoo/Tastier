@@ -1,146 +1,146 @@
-# TastyTrade Position Analysis 
+# Tastier
 
-Localhost web app: pulls tastytrade positions (read-only) and renders a live
-payoff analysis graph — expiration curve, T+0 curve, breakevens, live P/L.
-Yest this will be on http://localhost or 127.0.0.1 to avoid breaking TT security policies and to keep your account safe.
+A local-only TastyTrade dashboard: live positions, payoff graphs, and AI
+position analysis. Runs on `127.0.0.1:8420` so your TT credentials never leave
+your machine.
+
+## What it does
+
+- **Live positions** — pulls open positions (read-only), groups by underlying,
+  streams live marks via DXLink.
+- **Payoff graph** — server-side Black-Scholes T+0 curve using live IV plus
+  expiration P/L, breakevens, and live P/L. Rendered in the browser with
+  Recharts.
+- **AI analysis** — asks an LLM to rate position health/risk/P-L and suggest
+  actions. Supports Anthropic, OpenAI, Gemini, DeepSeek, and Kimi (Moonshot).
+- **History** — every analysis is saved per symbol; switch between past runs
+  from the dropdown.
+- **Editable prompt** — the position-analysis system prompt lives in
+  `app/prompts/position_analysis.md`. A copy in your OS user-data folder can
+  override it without rebuilding the app.
 
 ## Security model
 
-- **Read-only OAuth grant** — no trading permission exists on the token.
+- **Read-only OAuth grant** — the app cannot trade.
 - Credentials live only in a `.env` file inside your OS user-data folder
-  (Windows: `%LOCALAPPDATA%\Tastier`, macOS: `~/Library/Application Support/Tastier`).
-  They are never mixed with source files and never seen by the browser.
-- Server binds `127.0.0.1` only — unreachable from your network.
-- Code contains zero order/trade endpoints (defense in depth).
+  (`%LOCALAPPDATA%\Tastier` on Windows, `~/Library/Application Support/Tastier`
+  on macOS). Never in source control, never sent to the browser.
+- Server binds `127.0.0.1` only.
+- No order/trade endpoints in the codebase.
 
-## Quick start (release binary — no Python needed)
+## Quick start (release binary)
 
-Download the latest zip from the [Releases](https://github.com/bluewhackadoo/Tastier/releases)
-page, extract, and run:
+Download a zip from [Releases](https://github.com/bluewhackadoo/Tastier/releases):
 
-- **Windows:** `Tastier.exe`
-- **macOS:** right-click `Tastier.app` → **Open** (the app is not notarized; Gatekeeper
-  will warn on first launch).
+- **Windows:** run `Tastier.exe`.
+- **macOS:** right-click `Tastier.app` → **Open**.
 
-The first-run setup page asks for your **TT_SECRET** and **TT_REFRESH**.
-See [Get your tastytrade OAuth credentials](#get-your-tastytrade-oauth-credentials)
-below. Choose **paper** to practice on the cert/sandbox environment, or **live**
-for your real account. Credentials are saved to your OS user-data folder only.
+The first-run setup page asks for **TT_SECRET** and **TT_REFRESH**.
+See [OAuth setup](#oauth-setup) below. Choose **paper** for the sandbox or
+**live** for your real account.
 
 ## Developer setup (Python 3.11+)
 
-1. **Install:**
-   ```
-   pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
 
-2. **Get your tastytrade OAuth credentials** (same steps as the binary).
+# Copy the example .env to your user-data folder and edit it.
+# Windows PowerShell:
+$d = "$env:LOCALAPPDATA\Tastier"; New-Item -ItemType Directory -Force $d
+Copy-Item .env.example "$d\.env"
+# macOS / Linux:
+mkdir -p ~/Library/Application\ Support/Tastier
+cp .env.example ~/Library/Application\ Support/Tastier/.env
+chmod 600 ~/Library/Application\ Support/Tastier/.env
 
-3. **Configure** (creates the `.env` in your user-data folder, not the project folder):
+make check   # should print ok:true with your accounts
+make run     # open http://127.0.0.1:8420
+```
 
-   Windows PowerShell:
-   ```
-   $d = "$env:LOCALAPPDATA\Tastier"; New-Item -ItemType Directory -Force $d
-   Copy-Item .env.example "$d\.env"
-   # edit "$d\.env" and paste TT_SECRET, TT_REFRESH; leave TT_ENV=paper
-   ```
+## OAuth setup
 
-   macOS / Linux:
-   ```
-   mkdir -p ~/Library/Application\ Support/Tastier
-   cp .env.example ~/Library/Application\ Support/Tastier/.env
-   chmod 600 ~/Library/Application\ Support/Tastier/.env
-   # edit the file and paste TT_SECRET, TT_REFRESH; leave TT_ENV=paper
-   ```
+Get a **read-only** personal OAuth grant from tastytrade.
 
-4. **Validate:**
-   ```
-   make check
-   ```
-   Green path prints `"ok": true` with your account list.
+1. Log in to the right portal:
+   - **Paper:** https://developer.tastytrade.com (sandbox login)
+   - **Live:** https://my.tastytrade.com
+2. **Manage → My Profile → API → OAuth Applications**.
+3. Create an app named `Tastier Local`. Scope: **read only**.
+4. Create a personal grant.
+5. Copy **Client Secret** → `TT_SECRET`, **Refresh Token** → `TT_REFRESH`.
 
-5. **Run:**
-   ```
-   make run
-   ```
-   Open http://127.0.0.1:8420.
+Paper and live credentials are separate. If auth fails, make sure `TT_ENV`
+matches the portal you used.
 
-## Get your tastytrade OAuth credentials
+## LLM analysis setup
 
-Both the release binary and the dev setup need a **read-only** personal OAuth
-grant from tastytrade.
+Add one or more keys to your user-data `.env`:
 
-1. Log in to the correct portal:
-   - **Paper / cert:** https://developer.tastytrade.com → sandbox login
-     or
-   - **Live:** https://my.tastytrade.com which is probably where you have active positions
-2. Go to **Manage → My Profile → API → OAuth Applications**.
-3. Click **Create Application** (or equivalent). Give it a name like
-   "Tastier Local".
-4. **Scopes:** enable **read** only. Do **not** enable trade.
-5. Create a **personal grant** for that application.
-6. Copy the values:
-   - **Client Secret** → paste into the **TT_SECRET** field
-   - **Refresh Token** → paste into the **TT_REFRESH** field
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+GEMINI_API_KEY=...
+DEEPSEEK_API_KEY=sk-...
+# Kimi/Moonshot accepts either name:
+KIMI_API_KEY=sk-...
+MOONSHOT_API_KEY=sk-...
 
-Paper and live credentials are separate. If you get an auth error, double-check
-that the credential matches the selected environment.
+# Optional:
+LLM_PROVIDER=anthropic          # anthropic | openai | gemini | deepseek | kimi
+LLM_MODEL=claude-sonnet-5       # override the default model
+KIMI_BASE_URL=https://api.moonshot.ai/v1  # proxy/OpenRouter support
+```
+
+The model dropdown is refreshed from each provider at startup. Optional
+pricing overrides go in `<user-data>/Tastier/pricing/models_pricing.json`.
 
 ## Tests
 
-| Command         | What it validates                                            |
-|-----------------|--------------------------------------------------------------|
-| `make test`     | Offline: BS pricing known answers, iron condor / covered call P&L, breakevens, T+0 > expiration, position schema, grouping, API routing with mocked broker |
-| `make test-e2e` | Live against your paper account: auth → accounts → positions → DXLink quote received ≤20s → analysis payload |
+| Command | What it checks |
+|---------|----------------|
+| `make test` | Offline: option pricing, P&L, breakevens, position grouping, mocked broker routes |
+| `make test-e2e` | Live paper account: auth → positions → DXLink quote → analysis |
 
 ## Architecture
 
 ```
 browser (React + Recharts, no build step)
-   │  REST: /api/positions /api/analysis        WS: /ws/quotes
+   │  REST: /api/positions, /api/analyze, /api/analyses
+   │  WS:  /ws/quotes
    ▼
 FastAPI (127.0.0.1:8420)
-   │  holds session + token refresh
+   │  session + token refresh
    ├─► tastytrade REST  — accounts, positions, option details
-   └─► DXLink websocket — Quote + Greeks, one upstream conn, fan-out relay
+   ├─► DXLink websocket — Quote/Greeks, single upstream, fan-out relay
+   └─► LLM providers      — Anthropic, OpenAI, Gemini, DeepSeek, Kimi
 ```
 
-T+0 line = Black-Scholes per leg using **live IV from the Greeks stream** and
-live spot; expiration line = intrinsic. Both computed server-side in
-`app/payoff.py` (fully unit-tested), rendered client-side.
+Key files:
 
-## Initial user test checklist (paper account)
+- `app/main.py` — FastAPI routes, DXLink relay, analysis endpoints.
+- `app/advisor.py` — LLM provider selection, model enumeration, pricing.
+- `app/payoff.py` — T+0/expiration curves and Greeks-based valuation.
+- `app/prompts/position_analysis.md` — editable system prompt.
+- `run_app.py` — PyInstaller entry point that locates bundled assets.
 
-1. `make check` → ok:true, paper account listed
-2. `make run` → positions grouped by underlying, live marks ticking
-3. Click a position → graph renders; T+0 line moves with quotes (3s refresh)
-4. "stream live" indicator green; kill wifi → "stream down" → restore → auto-reconnects
-5. `make test-e2e` → all pass
+## Release builds
 
-## Building a release binary
+Push a version tag to build Windows and macOS binaries via GitHub Actions:
 
-GitHub Actions builds Windows and macOS binaries automatically when you push a
-tag like `v0.1.0`:
-
-```
+```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The workflow in `.github/workflows/release.yml` produces
-`Tastier-Windows-x64.zip` and `Tastier-macOS.zip` and attaches them to a GitHub
-release.
+`.github/workflows/release.yml` attaches `Tastier-Windows-x64.zip` and
+`Tastier-macOS.zip` to a GitHub release. `.github/workflows/nightly.yml`
+builds a daily pre-release at 4 AM Pacific if the repo changed in the last 24
+hours.
 
-To build locally:
+Build locally with:
 
-```
+```bash
 make build
 ```
 
-Output:
-
-- Windows: `dist/Tastier.exe`
-- macOS: `dist/Tastier.app`
-
-The dev workflow (`make run`) is unchanged; the binary only bundles the app for
-users who don't have Python installed.
+Output: `dist/Tastier.exe` (Windows) or `dist/Tastier.app` (macOS).
