@@ -1,9 +1,11 @@
 """Golden regression: the server-side grouping must reproduce, exactly, the
-partition the original frontend clusterLegs() produced for a real snapshot of
-the account's positions. This locks behavior across the JS->Python refactor.
+partition the original frontend clusterLegs() produced. This locks behavior
+across the JS->Python refactor.
 
-Fixtures/golden captured 2026-07-17 from the live account via the frontend
-window.__tastierGroup debug hook.
+The fixtures are SYNTHETIC — anonymized from a real account snapshot so the
+grouping structure (order chains, relative strikes, quantity ratios, put/call
+mix, expirations) is preserved while tickers are renamed and cost basis is
+stripped. Never commit real position data; these tests only need shapes.
 """
 
 import json
@@ -14,7 +16,7 @@ import pytest
 from app.grouping import cluster_legs, classify, is_condor_shape, fingerprint
 
 FIX = pathlib.Path(__file__).parent / "fixtures"
-POSITIONS = json.loads((FIX / "positions_live_snapshot.json").read_text(encoding="utf-8"))
+POSITIONS = json.loads((FIX / "positions_synthetic.json").read_text(encoding="utf-8"))
 GOLDEN = json.loads((FIX / "grouping_golden.json").read_text(encoding="utf-8"))
 
 
