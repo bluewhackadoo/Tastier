@@ -1,0 +1,193 @@
+{
+ "ACME": [
+  {
+   "label": "Butterfly · 0d",
+   "legs": [
+    "ACMEW  260721P07495000",
+    "ACMEW  260721P07500000",
+    "ACMEW  260721P07505000"
+   ]
+  }
+ ],
+ "/FUT0": [
+  {
+   "label": "Iron Condor · 58d",
+   "legs": [
+    "./FUT0 LOV6  260917C88",
+    "./FUT0 LOV6  260917C91",
+    "./FUT0 LOV6  260917P62",
+    "./FUT0 LOV6  260917P64"
+   ]
+  },
+  {
+   "label": "Vertical · 58d",
+   "legs": [
+    "./FUT0 LOV6  260917C82",
+    "./FUT0 LOV6  260917C83.5"
+   ]
+  }
+ ],
+ "BOLT": [
+  {
+   "label": "Butterfly · 3d",
+   "legs": [
+    "BOLT  260724P00108000",
+    "BOLT  260724P00112000",
+    "BOLT  260724P00115000"
+   ]
+  }
+ ],
+ "CRUX": [
+  {
+   "label": "Iron Condor · 24d",
+   "legs": [
+    "CRUX  260814C00160000",
+    "CRUX  260814C00172500",
+    "CRUX  260814P00090000",
+    "CRUX  260814P00115000"
+   ]
+  },
+  {
+   "label": "Iron Condor · 24d",
+   "legs": [
+    "CRUX  260814C00155000",
+    "CRUX  260814C00180000",
+    "CRUX  260814P00095000",
+    "CRUX  260814P00125000"
+   ]
+  },
+  {
+   "label": "Vertical · 31d",
+   "legs": [
+    "CRUX  260821P00110000",
+    "CRUX  260821P00135000"
+   ]
+  }
+ ],
+ "DYNE": [
+  {
+   "label": "Iron Condor · 59d",
+   "legs": [
+    "DYNE  260918C00470000",
+    "DYNE  260918C00510000",
+    "DYNE  260918P00310000",
+    "DYNE  260918P00340000"
+   ]
+  },
+  {
+   "label": "Iron Condor · 87d",
+   "legs": [
+    "DYNE  261016C00455000",
+    "DYNE  261016C00520000",
+    "DYNE  261016P00280000",
+    "DYNE  261016P00345000"
+   ]
+  }
+ ],
+ "EPIC": [
+  {
+   "label": "Custom · 331d",
+   "legs": [
+    "EPIC  270617C00390000",
+    "EPIC  270617C00490000",
+    "EPIC  270617P00290000"
+   ]
+  }
+ ],
+ "FLUX": [
+  {
+   "label": "Short Strangle · 31d",
+   "legs": [
+    "FLUX  260821C00350000",
+    "FLUX  260821P00290000"
+   ]
+  }
+ ],
+ "GYRO": [
+  {
+   "label": "Vertical · 38d",
+   "legs": [
+    "GYRO   260828P00160000",
+    "GYRO   260828P00185000"
+   ]
+  },
+  {
+   "label": "Butterfly · 38d",
+   "legs": [
+    "GYRO   260828P00220000",
+    "GYRO   260828P00255000",
+    "GYRO   260828P00260000"
+   ]
+  }
+ ],
+ "HELM": [
+  {
+   "label": "Iron Condor · 31d",
+   "legs": [
+    "HELM  260821C00785000",
+    "HELM  260821C00810000",
+    "HELM  260821P00515000",
+    "HELM  260821P00540000"
+   ]
+  }
+ ],
+ "IRIS": [
+  {
+   "label": "Short Call · 150d",
+   "legs": [
+    "IRIS  261218C00170000"
+   ]
+  },
+  {
+   "label": "Short Call · 150d",
+   "legs": [
+    "IRIS  261218C00220000"
+   ]
+  },
+  {
+   "label": "Short Put · 150d",
+   "legs": [
+    "IRIS  261218P00080000"
+   ]
+  }
+ ],
+ "JOLT": [
+  {
+   "label": "Call · 150d",
+   "legs": [
+    "JOLT   261218C00125000"
+   ]
+  },
+  {
+   "label": "Short Strangle · 150d",
+   "legs": [
+    "JOLT   261218C00150000",
+    "JOLT   261218P00097500"
+   ]
+  }
+ ],
+ "KILN": [
+  {
+   "label": "Short Strangle · 87d",
+   "legs": [
+    "KILN  261016C00270000",
+    "KILN  261016P00175000"
+   ]
+  }
+ ],
+ "LUMEN": [
+  {
+   "label": "Custom · 163d",
+   "legs": [
+    "LUMEN   261231C00068000",
+    "LUMEN   261231P00060500"
+   ]
+  },
+  {
+   "label": "Short Put · 163d",
+   "legs": [
+    "LUMEN   261231P00058500"
+   ]
+  }
+ ]
+}

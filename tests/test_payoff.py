@@ -34,7 +34,7 @@ def test_bs_non_positive_spot_is_intrinsic():
 
 
 def test_wide_strike_grid_stays_positive_and_analysis_survives():
-    # 100P against a 650C (DELL-like) — padding must not push the grid <= 0
+    # a 100P against a 650C — wide strikes must not push the grid <= 0
     legs = [
         Leg(qty=-4, multiplier=100, open_price=1.4, strike=100, option_type="P",
             dte_years=0.7, iv=0.5),
@@ -116,17 +116,17 @@ def test_grid_contains_spot_and_strikes():
 
 
 def test_condor_chains_merge_into_one_curve_group():
-    # MSFT-style: 91d strangle (one chain) + protective wings (another chain)
-    # jointly form an iron condor; the chart must not split them into two
-    # phantom sub-positions (matches the table's mergeCondorGroups)
+    # a back-month strangle (one chain) plus protective wings added later
+    # (another chain) jointly form an iron condor; the chart must not split
+    # them into two phantom sub-positions (matches mergeCondorGroups)
     def mk(qty, k, t, dte, chain):
         return Leg(qty=qty, multiplier=100, open_price=1.0, strike=k,
                    option_type=t, dte_years=dte / 365, iv=0.4, chain=chain)
     legs = [
-        mk(1, 310, "P", 63, 1), mk(-1, 340, "P", 63, 1),
-        mk(-1, 470, "C", 63, 1), mk(1, 510, "C", 63, 1),
-        mk(-4, 345, "P", 91, 2), mk(-4, 455, "C", 91, 2),
-        mk(4, 280, "P", 91, 3), mk(4, 520, "C", 91, 3),
+        mk(1, 110, "P", 63, 1), mk(-1, 120, "P", 63, 1),
+        mk(-1, 180, "C", 63, 1), mk(1, 190, "C", 63, 1),
+        mk(-4, 125, "P", 91, 2), mk(-4, 175, "C", 91, 2),
+        mk(4, 100, "P", 91, 3), mk(4, 200, "C", 91, 3),
     ]
     r = analysis(legs, 400.0)
     # 91d merges to a single terminal group (embodied in the outer shape),
