@@ -16,7 +16,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from . import advisor, payoff
+from . import advisor, grouping, payoff
 from .config import ENV_DIR as CONFIG_DIR, save_credentials, settings
 from .streamer import relay
 from .tasty import (fetch_logo, fetch_order_chains, fetch_positions,
@@ -198,7 +198,14 @@ async def positions(account_number: str) -> dict:
     symbols = {l["streamer_symbol"] for l in legs} | {
         l.get("underlying_streamer") or l["underlying"] for l in legs}
     await relay.ensure_running(symbols)
-    return {"groups": group_by_underlying(legs)}
+    groups = group_by_underlying(legs)
+    # canonical strategy clusters per underlying so the left panel, table and
+    # chart all render the same grouping (app/grouping.py is the only owner)
+    clusters = {u: [{"label": c["label"], "dte": c["dte"],
+                     "legs": [l["symbol"] for l in c["legs"]]}
+                    for c in grouping.cluster_legs(gl)]
+                for u, gl in groups.items()}
+    return {"groups": groups, "clusters": clusters}
 
 
 @app.get("/api/analysis/{account_number}/{underlying:path}")
@@ -231,7 +238,17 @@ async def analysis(account_number: str, underlying: str, hide: str = "") -> dict
             dte_years=l["dte_years"], iv=live.get("iv", 0.0) or 0.20,
             symbol=l["symbol"], chain=l.get("chain"),
         ))
-    result = payoff.analysis(legs, float(spot))
+    # canonical strategy grouping (app.grouping) drives BOTH the chart's
+    # curve partition and the table's rows, so they can't disagree. The chart
+    # partitions only the enabled legs; the table always shows every leg so
+    # toggled-off strategies stay visible and re-enableable.
+    partition = [(c["dte"], [l["symbol"] for l in c["legs"]])
+                 for c in grouping.cluster_legs(enabled)
+                 if c["legs"][0]["strike"] is not None]
+    result = payoff.analysis(legs, float(spot), partition)
+    result["clusters"] = [{"label": c["label"], "dte": c["dte"],
+                           "legs": [l["symbol"] for l in c["legs"]]}
+                          for c in grouping.cluster_legs(legs_raw)]
     result["legs"] = enabled          # chart-facing: flags, curves context
     stats_all = _leg_stats(legs_raw, float(spot))
     result["leg_stats"] = stats_all   # table-facing: every leg, always

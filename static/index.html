@@ -604,11 +604,25 @@ if (typeof window !== "undefined") {
   }));
 }
 
-function GroupLegs({ legs, spot }) {
+// Rehydrate the server's canonical clusters (app/grouping.py) into the shape
+// the renderers expect. Falls back to the local clusterLegs() when the
+// payload predates the server-side grouping (e.g. stale cached page).
+function serverClusters(clusters, legs) {
+  if (!clusters || !clusters.length) return clusterLegs(legs);
+  const bySym = new Map(legs.map(l => [l.symbol, l]));
+  const out = [];
+  for (const c of clusters) {
+    const ls = c.legs.map(s => bySym.get(s)).filter(Boolean);
+    if (ls.length) out.push({ label: c.label, legs: ls });
+  }
+  return out.length ? out : clusterLegs(legs);
+}
+
+function GroupLegs({ legs, spot, clusters }) {
   const rsb = detectRSB(legs, spot);
   return html`
     ${rsb ? html`<div class="rsbbadge">${rsb}</div>` : null}
-    ${clusterLegs(legs).map(c => html`
+    ${serverClusters(clusters, legs).map(c => html`
     <div key=${c.label + ":" + c.legs[0].symbol}>
       <div class="subexp">${c.label}</div>
       ${c.legs.map(l => html`<${LegPills} key=${l.symbol} l=${l} />`)}
@@ -620,6 +634,7 @@ function App() {
   const [setup, setSetup] = useState(null);       // /api/setup/validate result
   const [account, setAccount] = useState(null);
   const [groups, setGroups] = useState({});
+  const [clusters, setClusters] = useState({});   // server-side grouping per underlying
   const [sel, setSel] = useState(null);
   const [ana, setAna] = useState(null);
   const [quotes, setQuotes] = useState({});
@@ -638,6 +653,7 @@ function App() {
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(d => {
         setGroups(d.groups);
+        setClusters(d.clusters || {});
         if (!preserveSel) {
           const keys = Object.keys(d.groups);
           const saved = localStorage.getItem("tastier.sel");
@@ -790,7 +806,7 @@ function App() {
               <span class="u">${u}</span>
               <span class="px ${q.dir || ''}">${fmt(q.mid)}</span>
             </div>
-            <${GroupLegs} legs=${legs} spot=${q.mid} />
+            <${GroupLegs} legs=${legs} spot=${q.mid} clusters=${clusters[u]} />
           </div>`;})}
         ${!Object.keys(groups).length && html`<div class="empty">No open positions</div>`}
       </div>
@@ -1348,7 +1364,8 @@ function Analysis({ ana, stale, sel, account, hidden, onToggle }) {
       </div>
       <div class="hdivider" onMouseDown=${dragChart}></div>
       ${ana.leg_stats ? html`<${PositionTable} stats=${ana.leg_stats} rollBasis=${ana.roll_basis}
-                              hidden=${hidden} onToggle=${onToggle} spot=${ana.spot} />` : null}
+                              hidden=${hidden} onToggle=${onToggle} spot=${ana.spot}
+                              serverGroups=${ana.clusters} />` : null}
       <${AdvisorPanel} account=${account} sel=${sel} />
     </div>`;
 }
@@ -1581,11 +1598,11 @@ function AdvisorPanel({ account, sel }) {
     </div>`;
 }
 
-function PositionTable({ stats, rollBasis, hidden, onToggle, spot }) {
+function PositionTable({ stats, rollBasis, hidden, onToggle, spot, serverGroups }) {
   const isOff = c => hidden && c.legs.every(l => hidden.has(l.symbol));
   const rsb = detectRSB(stats, spot);
   const num = (v, d=2) => html`<span class="num ${v>0?'pos':v<0?'neg':''}">${fmt(v,d)}</span>`;
-  const clusters = clusterLegs(stats);
+  const clusters = serverClusters(serverGroups, stats);
   const sum = (ls, k) => ls.reduce((a, s) => a + s[k], 0);
   const tot = k => sum(stats, k);
   // how many option legs share each expiration, so a roll basis (which spans

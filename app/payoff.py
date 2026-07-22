@@ -253,8 +253,12 @@ def _merge_condor_groups(groups: list[list[Leg]]) -> list[list[Leg]]:
     return merged
 
 
-def analysis(legs: list[Leg], spot: float) -> dict:
+def analysis(legs: list[Leg], spot: float,
+             partition: list[tuple[int, list[str]]] | None = None) -> dict:
     """Full payload for the frontend graph.
+
+    `partition` is [(dte_days, [leg symbols]), ...] from app.grouping — the
+    canonical strategy grouping shared with the position table.
 
     The shaded "@ EXP" curve is the terminal payoff with every leg at
     intrinsic (the conventional expiration diagram: underlying assumed at
@@ -278,19 +282,30 @@ def analysis(legs: list[Leg], spot: float) -> dict:
     # reads as one iron condor, not two phantom positions). When the terminal
     # expiration holds a single group it is embodied in the combined
     # expiration_pl outer shape and not repeated.
-    by_dte: dict[int, list[Leg]] = {}
-    for l in legs:
-        if l.strike is not None:
-            by_dte.setdefault(round(l.dte_years * 365), []).append(l)
+    # `partition` (from app.grouping via the API layer, which has the leg
+    # expirations the Leg dataclass doesn't carry) is the single source of
+    # truth shared with the position table. Without it — direct callers and
+    # unit tests — fall back to the equivalent local grouping.
     groups: list[tuple[int, list[Leg]]] = []
-    for d in sorted(by_dte):
-        dl = by_dte[d]
-        by_chain: dict[object, list[Leg]] = {}
-        for l in dl:
-            by_chain.setdefault(l.chain, []).append(l)
-        merged = _merge_condor_groups(list(by_chain.values()))
-        for gl in merged:
-            groups.append((d, gl))
+    if partition:
+        by_symbol = {l.symbol: l for l in legs if l.strike is not None}
+        for dte, symbols in partition:
+            gl = [by_symbol[s] for s in symbols if s in by_symbol]
+            if gl:
+                groups.append((dte, gl))
+        groups.sort(key=lambda g: g[0])
+    else:
+        by_dte: dict[int, list[Leg]] = {}
+        for l in legs:
+            if l.strike is not None:
+                by_dte.setdefault(round(l.dte_years * 365), []).append(l)
+        for d in sorted(by_dte):
+            dl = by_dte[d]
+            by_chain: dict[object, list[Leg]] = {}
+            for l in dl:
+                by_chain.setdefault(l.chain, []).append(l)
+            for gl in _merge_condor_groups(list(by_chain.values())):
+                groups.append((d, gl))
     term_d = groups[-1][0] if groups else 0
     n_term = sum(1 for d, _ in groups if d == term_d)
     curves = []
