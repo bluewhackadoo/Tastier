@@ -21,7 +21,7 @@ from .config import settings
 
 _session: Session | None = None
 
-# OCC option symbol -> expiration YYMMDD (e.g. "NVDA  261016P00175000")
+# OCC option symbol -> expiration YYMMDD (e.g. "TICKER 261016P00175000")
 _OCC_EXP = re.compile(r"(\d{6})[PC]\d")
 
 # TradingView's public symbol-search + logo CDN (used by their own widgets)

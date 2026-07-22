@@ -110,7 +110,7 @@ class QuoteRelay:
         await self._broadcast({"type": "quote", **rec})
 
     async def _on_candle(self, c: Candle) -> None:
-        # event symbol carries the aggregation suffix, e.g. "SPCX{=1m}"
+        # event symbol carries the aggregation suffix, e.g. "TICKER{=1m}"
         sym = c.event_symbol.split("{")[0]
         if not (c.open and c.close):
             return
