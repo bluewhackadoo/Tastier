@@ -595,6 +595,15 @@ function clusterLegs(legs) {
   return clusters;
 }
 
+// debug hook: lets the regression harness capture the exact grouping this
+// build produces, so the server-side refactor can be proven identical
+if (typeof window !== "undefined") {
+  window.__tastierGroup = legs => clusterLegs(legs).map(c => ({
+    label: c.label,
+    legs: c.legs.map(l => l.symbol).sort(),
+  }));
+}
+
 function GroupLegs({ legs, spot }) {
   const rsb = detectRSB(legs, spot);
   return html`
