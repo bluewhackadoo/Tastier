@@ -346,157 +346,8 @@ const LegPills = ({ l }) => l.strike == null
       <span class="pill pc">${l.option_type}</span>
     </div>`;
 
-// name the strategy for one expiration's legs (sorted by strike)
-function isCondorShape(ls) {
-  if (ls.length !== 4) return false;
-  const strikes = [...new Set(ls.map(l => l.strike))];
-  if (strikes.length !== 4) return false;
-  const puts = ls.filter(l => l.option_type === "P");
-  const calls = ls.filter(l => l.option_type === "C");
-  const sameAbs = ls.every(l => Math.abs(l.qty) === Math.abs(ls[0].qty));
-  if (!sameAbs) return false;
-  if (puts.length === 2 && calls.length === 2) {
-    const [pLo, pHi] = puts.sort((a, b) => a.strike - b.strike);
-    const [cLo, cHi] = calls.sort((a, b) => a.strike - b.strike);
-    if (pLo.qty > 0 && pHi.qty < 0 && cLo.qty < 0 && cHi.qty > 0) return true;
-    if (pLo.qty < 0 && pHi.qty > 0 && cLo.qty > 0 && cHi.qty < 0) return true;
-  }
-  if (puts.length === 4 || calls.length === 4) {
-    const sorted = ls.sort((a, b) => a.strike - b.strike);
-    const signs = sorted.map(l => Math.sign(l.qty));
-    if (signs[0] === 1 && signs[1] === -1 && signs[2] === -1 && signs[3] === 1) return true;
-    if (signs[0] === -1 && signs[1] === 1 && signs[2] === 1 && signs[3] === -1) return true;
-  }
-  return false;
-}
 
-function classify(ls) {
-  const puts = ls.filter(l => l.option_type === "P");
-  const calls = ls.filter(l => l.option_type === "C");
-  const sameAbs = ls.every(l => Math.abs(l.qty) === Math.abs(ls[0].qty));
-  if (ls.length === 4 && puts.length === 2 && calls.length === 2 && sameAbs) {
-    const [pLo, pHi] = puts, [cLo, cHi] = calls;
-    if (pLo.qty > 0 && pHi.qty < 0 && cLo.qty < 0 && cHi.qty > 0)
-      return pHi.strike === cLo.strike ? "Iron Butterfly" : "Iron Condor";
-    if (pLo.qty < 0 && pHi.qty > 0 && cLo.qty > 0 && cHi.qty < 0)
-      return "Reverse Iron Condor";
-  }
-  if (ls.length === 4 && sameAbs && (puts.length === 4 || calls.length === 4)
-      && isCondorShape(ls)) {
-    const kind = puts.length === 4 ? "Put" : "Call";
-    const sorted = ls.sort((a, b) => a.strike - b.strike);
-    const signs = sorted.map(l => Math.sign(l.qty));
-    return signs[0] === 1 && signs[1] === -1 && signs[2] === -1 && signs[3] === 1
-      ? `${kind} Condor` : `Reverse ${kind} Condor`;
-  }
-  if (ls.length === 3 && (puts.length === 3 || calls.length === 3)) {
-    const [a, b, c] = ls;
-    if (a.qty === c.qty && b.qty === -2 * a.qty)
-      return (a.qty > 0 ? "" : "Reverse ") + "Butterfly";
-  }
-  if (ls.length === 2 && puts.length === 1 && calls.length === 1
-      && Math.sign(puts[0].qty) === Math.sign(calls[0].qty)) {
-    const kind = puts[0].strike === calls[0].strike ? "Straddle" : "Strangle";
-    return (puts[0].qty < 0 ? "Short " : "") + kind;
-  }
-  if (ls.length === 2 && (puts.length === 2 || calls.length === 2)
-      && ls[0].qty === -ls[1].qty)
-    return "Vertical";
-  if (ls.length === 1)
-    return (ls[0].qty < 0 ? "Short " : "") + (ls[0].option_type === "C" ? "Call" : "Put");
-  return "Custom";
-}
 
-// pair long/short legs of one option type into verticals (by strike order);
-// returns null unless the legs split cleanly into matching pairs
-function extractVerticals(legs) {
-  const longs = legs.filter(l => l.qty > 0), shorts = legs.filter(l => l.qty < 0);
-  if (!longs.length || longs.length !== shorts.length) return null;
-  if (!longs.every((l, i) => Math.abs(l.qty) === Math.abs(shorts[i].qty))) return null;
-  return longs.map((l, i) => [l, shorts[i]]);
-}
-
-// a same-expiry cluster that classifies as Custom may really be several
-// stacked strategies (e.g. two iron condors opened separately); split it
-// into verticals and pair put+call verticals into condors
-function decompose(ls) {
-  if (ls.length < 4 || classify(ls) !== "Custom") return [ls];
-  const pv = extractVerticals(ls.filter(l => l.option_type === "P"));
-  const cv = extractVerticals(ls.filter(l => l.option_type === "C"));
-  const byStrike = sub => sub.sort((a, b) =>
-    a.strike - b.strike || (a.option_type === "P" ? -1 : 1));
-  const puts = ls.filter(l => l.option_type === "P");
-  const calls = ls.filter(l => l.option_type === "C");
-  if (pv && cv && pv.length === cv.length)
-    return pv.map((v, i) => byStrike([...v, ...cv[i]]));
-  if (pv && !calls.length) return pv.map(byStrike);   // stacked put verticals
-  if (cv && !puts.length) return cv.map(byStrike);    // stacked call verticals
-  return [ls];
-}
-
-// Two separate order chains may each look like a vertical, but together form a
-// condor (e.g. put condor opened as two put spreads). Merge those groups.
-function mergeCondorGroups(groups) {
-  const merged = [];
-  const used = new Set();
-  for (let i = 0; i < groups.length; i++) {
-    if (used.has(i)) continue;
-    const g1 = groups[i];
-    let partnerIdx = -1;
-    for (let j = i + 1; j < groups.length; j++) {
-      if (used.has(j)) continue;
-      const combined = [...g1, ...groups[j]];
-      if (isCondorShape(combined)) {
-        partnerIdx = j;
-        break;
-      }
-    }
-    if (partnerIdx >= 0) {
-      merged.push([...g1, ...groups[partnerIdx]]);
-      used.add(i);
-      used.add(partnerIdx);
-    } else {
-      merged.push(g1);
-    }
-  }
-  return merged;
-}
-
-// equity legs first, then clusters per expiration labeled with the detected
-// strategy; shared by the left panel and the position table.
-//
-// Grouping rules:
-// 1. Start from order chains when available (how tastytrade actually opened the
-//    positions).  Legs without a chain id are bucketed together as "unknown".
-// 2. Merge chain groups whose exact strike / type / direction signature is
-//    identical, so adding to the same strategy across multiple orders shows as
-//    one line.
-// 3. Non-identical strategies (including overlapping condors from different
-//    orders) stay in separate groups.
-// 4. Within each merged group, run shape decomposition so stacked identical
-//    strategies are still labeled correctly.
-// Find a subset of items whose weights exactly equal target (memoised DFS).
-function findExactSubset(items, target, weightFn) {
-  const n = items.length;
-  const memo = new Map();
-  const dfs = (i, remaining) => {
-    if (remaining === 0) return [];
-    if (i >= n || remaining < 0) return null;
-    const key = `${i},${remaining}`;
-    if (memo.has(key)) return memo.get(key);
-    const w = weightFn(items[i]);
-    const take = w <= remaining ? dfs(i + 1, remaining - w) : null;
-    if (take) {
-      const res = [items[i], ...take];
-      memo.set(key, res);
-      return res;
-    }
-    const skip = dfs(i + 1, remaining);
-    memo.set(key, skip);
-    return skip;
-  };
-  return dfs(0, target);
-}
 
 // Detect a Ratio Super Bull (RSB) or reverse RSB across all option legs.
 // Standard RSB: 2 short OTM puts, 1 long ATM call, 1 short OTM call.
@@ -541,81 +392,32 @@ function detectRSB(legs, spot) {
   return null;
 }
 
-function clusterLegs(legs) {
-  const clusters = [];
+
+// Last-resort grouping if a payload arrives without server clusters (should
+// not happen): one group per expiration, unlabeled by strategy. Real grouping
+// lives in app/grouping.py — never reintroduce a JS implementation.
+function fallbackClusters(legs) {
   const eq = legs.filter(l => l.strike == null);
-  if (eq.length) clusters.push({
-    label: eq[0].symbol?.includes("/") ? "Futures" : "Stock", legs: eq });
+  const out = eq.length ? [{ label: "Stock", legs: eq }] : [];
   const byExp = {};
   for (const l of legs) if (l.strike != null) (byExp[l.expiration] ??= []).push(l);
-
-  const sig = ls => {
-    const parts = ls.map(l => `${l.strike}:${l.option_type}:${Math.sign(l.qty)}`);
-    return [...new Set(parts)].sort().join("|");
-  };
-
-  for (const exp of Object.keys(byExp).sort()) {
-    const dl = byExp[exp];
-    // Split by order chain when any leg has chain info.
-    const byChain = {};
-    for (const l of dl) {
-      const c = l.chain == null ? "__unknown__" : l.chain;
-      (byChain[c] ??= []).push(l);
-    }
-    let groups = Object.values(byChain).map(g => g.map(l => ({...l})));
-
-    // Merge identical signatures across chains/orders.
-    const merged = [];
-    for (const g of groups) {
-      const key = sig(g);
-      const idx = merged.findIndex(m => sig(m) === key);
-      if (idx >= 0) {
-        for (const leg of g) {
-          const match = merged[idx].find(l =>
-            l.strike === leg.strike && l.option_type === leg.option_type);
-          if (match) match.qty += leg.qty;
-          else merged[idx].push(leg);
-        }
-      } else {
-        merged.push(g);
-      }
-    }
-
-    // Merge separate chains/orders that together form a condor shape.
-    const afterCondor = mergeCondorGroups(merged);
-
-    for (const m of afterCondor) {
-      for (const sub of decompose(m.sort((a, b) =>
-        a.strike - b.strike || (a.option_type === "P" ? -1 : 1)))) {
-        sub.sort((a, b) => a.strike - b.strike || (a.option_type === "P" ? -1 : 1));
-        clusters.push({ label: `${classify(sub)} · ${dteDays(sub[0])}d`, legs: sub });
-      }
-    }
-  }
-  return clusters;
-}
-
-// debug hook: lets the regression harness capture the exact grouping this
-// build produces, so the server-side refactor can be proven identical
-if (typeof window !== "undefined") {
-  window.__tastierGroup = legs => clusterLegs(legs).map(c => ({
-    label: c.label,
-    legs: c.legs.map(l => l.symbol).sort(),
-  }));
+  for (const exp of Object.keys(byExp).sort())
+    out.push({ label: `${dteDays(byExp[exp][0])}d`, legs: byExp[exp] });
+  return out;
 }
 
 // Rehydrate the server's canonical clusters (app/grouping.py) into the shape
-// the renderers expect. Falls back to the local clusterLegs() when the
+// the renderers expect. Falls back to fallbackClusters() when the
 // payload predates the server-side grouping (e.g. stale cached page).
 function serverClusters(clusters, legs) {
-  if (!clusters || !clusters.length) return clusterLegs(legs);
+  if (!clusters || !clusters.length) return fallbackClusters(legs);
   const bySym = new Map(legs.map(l => [l.symbol, l]));
   const out = [];
   for (const c of clusters) {
     const ls = c.legs.map(s => bySym.get(s)).filter(Boolean);
     if (ls.length) out.push({ label: c.label, legs: ls });
   }
-  return out.length ? out : clusterLegs(legs);
+  return out.length ? out : fallbackClusters(legs);
 }
 
 function GroupLegs({ legs, spot, clusters }) {
