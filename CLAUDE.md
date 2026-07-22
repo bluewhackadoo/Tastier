@@ -71,6 +71,11 @@ expirations) is preserved. Real positions were leaked to a public repo once and
 required a history purge plus deleting a release tag that still pointed at the
 leak commit — check tags, not just branches, if it ever happens again.
 
+A **pre-commit hook** enforces this (`hooks/pre-commit`); enable it once per
+clone with `git config core.hooksPath hooks`. It blocks staged `.env`/`*.log`/
+`analyses/`, option symbols whose ticker isn't in the synthetic allowlist, and
+your account number (set `TASTIER_ACCT` or `.git/acct-guard`).
+
 Also keep out of commits: account numbers, `.env`, `tastier.log`, saved advisor
 runs (`analyses/`), and screenshots of positions. `.claude/` and `logos/` are
 gitignored.

@@ -1,0 +1,92 @@
+#!/usr/bin/env python
+"""Block commits that would leak private data.
+
+Real positions were once committed to a public repo; this makes that
+failure mode structural rather than a matter of remembering. Enable with:
+
+    git config core.hooksPath hooks
+
+Checks staged content for:
+  * secrets/log files that must never be tracked (.env, *.log, analyses/)
+  * option symbols whose ticker is not in the synthetic fixture allowlist
+  * a configured account number (env TASTIER_ACCT or .git/acct-guard)
+
+Bypass deliberately with `git commit --no-verify` if you are certain.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+# tickers that are legitimately synthetic test data
+ALLOWED = {"ACME", "BOLT", "CRUX", "DYNE", "EPIC", "FLUX", "GYRO", "HELM",
+           "IRIS", "JOLT", "KILN", "LUMEN", "MYCO", "ACMEW", "TICKER", "FUT0",
+           "TEST", "XYZ"}
+
+FORBIDDEN_PATHS = (
+    re.compile(r"(^|/)\.env$"),
+    re.compile(r"\.log$"),
+    re.compile(r"(^|/)analyses/"),
+    re.compile(r"(^|/)tastier\.log$"),
+    re.compile(r"positions_live", re.I),
+)
+
+# e.g. "ACME  260821C00350000" or "./FUT0 LOV6  260917P62"
+OCC = re.compile(r"\b([A-Z]{1,6})[A-Z]?\s+\d{6}[PC][\d.]+")
+
+
+def staged_files() -> list[str]:
+    out = subprocess.run(["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"],
+                         capture_output=True, text=True).stdout
+    return [f for f in out.splitlines() if f.strip()]
+
+
+def staged_blob(path: str) -> str:
+    r = subprocess.run(["git", "show", f":{path}"], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def account_number() -> str | None:
+    acct = os.environ.get("TASTIER_ACCT")
+    if acct:
+        return acct.strip()
+    f = Path(".git/acct-guard")
+    return f.read_text(encoding="utf-8").strip() if f.exists() else None
+
+
+def main() -> int:
+    problems: list[str] = []
+    acct = account_number()
+
+    for path in staged_files():
+        if any(p.search(path) for p in FORBIDDEN_PATHS):
+            problems.append(f"{path}: file type must never be committed")
+            continue
+        if path.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".zip", ".exe")):
+            continue
+        content = staged_blob(path)
+        if not content:
+            continue
+        if acct and acct in content:
+            problems.append(f"{path}: contains the account number")
+        bad = {m.group(1) for m in OCC.finditer(content)} - ALLOWED
+        if bad:
+            problems.append(f"{path}: real option symbols for {', '.join(sorted(bad))}"
+                            " (fixtures must be synthetic)")
+
+    if problems:
+        sys.stderr.write("\nBLOCKED — this commit looks like it contains private data:\n")
+        for p in problems:
+            sys.stderr.write(f"  - {p}\n")
+        sys.stderr.write("\nSanitize it, or `git commit --no-verify` if this is a"
+                         " false positive (then add the ticker to ALLOWED).\n\n")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
