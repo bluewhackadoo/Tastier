@@ -37,9 +37,29 @@ config dir, credential presence, and which LLM provider/model is active.
 | `advisor.py` | LLM position analysis (Anthropic/OpenAI/Gemini via raw REST) |
 | `main.py` | FastAPI routes, caches, orchestration |
 
-**Frontend** — `static/index.html`, a single no-build-step file (React + htm +
-Recharts from CDN). ~1.7k lines; the JS block is the main scaling pain point
-and is a good candidate to split into modules.
+**Frontend** — still **no build step**. `static/index.html` is now just a shell:
+CSS, the CDN `<script>` tags (React + htm + Recharts), and
+`<script type="module" src="/js/main.js">`. The app is an ES module graph under
+`static/js/`, served by the `/js/{path}` route in `main.py` (no-cache, forced
+`text/javascript`).
+
+| module | role |
+| --- | --- |
+| `vendor.js` | **the only** reader of the CDN globals — re-exports React hooks, `html`, Recharts pieces |
+| `api.js` | `ORIGIN`, `api()`, `wsUrl()` |
+| `format.js` | `fmt`/`money`/`fmtK`/`signColor`, date + strike display |
+| `scale.js` | `interp`, `niceStep`, `DTE_SHADES` |
+| `hooks.js` | `useDividerDrag` |
+| `clusters.js` | rehydrates server clusters + RSB badge detection (see invariant 1) |
+| `App.js` | top-level state, polling, websocket, left panel |
+| `components/` | `Analysis`, `PositionTable`, `AdvisorPanel`, `CandleChart`, `TVTicker`, `chartOverlay`, `ChartTip`, `legs`, `TickerLogo`, `SetupHelp` |
+
+Module rules that keep this working without a bundler: **relative specifiers
+with explicit `.js`** (no bare imports — there is no import map), and never read
+`window.React`/`Recharts` outside `vendor.js`. Because the browser resolves the
+graph at runtime, a mistyped import path fails only on load — `tests/test_api.py`
+walks the graph offline and asserts every import resolves, nothing is orphaned,
+and `index.html` still points at the entry.
 
 ## Invariants (break these and the UI lies)
 
@@ -52,6 +72,10 @@ and is a good candidate to split into modules.
    `tests/test_grouping.py` pins it to a golden captured from the original
    frontend implementation. If you change grouping, that test must be updated
    deliberately, never silently.
+   The browser's only role is `static/js/clusters.js`, which *rehydrates* the
+   server's partition (symbols → leg objects) and falls back to one-group-per-
+   expiration if a payload arrives without clusters. Never grow that file into
+   a second grouping implementation.
 2. **The chart shows enabled legs; the table shows every leg.** Per-strategy
    toggles hide legs from the chart math (`?hide=` on the analysis endpoint)
    but rows stay visible so they can be re-enabled.

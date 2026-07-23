@@ -121,6 +121,23 @@ async def index() -> FileResponse:
                         headers={"Cache-Control": "no-cache"})
 
 
+JS_DIR = (STATIC / "js").resolve()
+
+
+@app.get("/js/{path:path}")
+async def js_module(path: str) -> FileResponse:
+    # The frontend is a graph of ES modules under static/js. Same no-cache
+    # reasoning as index.html — a stale cached module is exactly the failure
+    # mode that has repeatedly masked fresh code, and now there are 16 of them.
+    f = (JS_DIR / path).resolve()
+    if not f.is_relative_to(JS_DIR) or f.suffix != ".js" or not f.is_file():
+        raise HTTPException(404, "no such module")
+    # explicit media type: the browser refuses a module served as text/plain,
+    # and Windows' registry-driven mimetypes has been known to return that
+    return FileResponse(f, media_type="text/javascript",
+                        headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/api/health")
 async def health() -> dict:
     problems = settings.validate()

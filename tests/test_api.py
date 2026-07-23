@@ -1,6 +1,7 @@
 """API tests with the tasty layer mocked — validates routing, caching, analysis wiring."""
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -53,3 +54,73 @@ async def test_analysis_without_positions_404(client):
     _legs_cache.clear()
     r = await client.get("/api/analysis/NOPE/SPX")
     assert r.status_code == 404
+
+
+# --- frontend ES module graph -------------------------------------------
+# static/index.html is a shell that loads static/js/main.js as a module; the
+# graph is resolved by the browser with no build step, so a mistyped relative
+# import only fails at runtime. These tests catch it offline instead.
+
+JS_DIR = Path(__file__).parent.parent / "static" / "js"
+INDEX = Path(__file__).parent.parent / "static" / "index.html"
+_IMPORT_RE = re.compile(r"""^\s*(?:import|export)\b[^;'"]*?from\s+["']([^"']+)["']""",
+                        re.MULTILINE)
+
+
+def _js_files() -> list[Path]:
+    return sorted(JS_DIR.rglob("*.js"))
+
+
+def test_js_entry_and_shell():
+    html = INDEX.read_text(encoding="utf-8")
+    assert '<script type="module" src="/js/main.js">' in html
+    # the old ~1.3k-line inline app must be gone, not merely duplicated
+    assert "function App()" not in html
+    assert (JS_DIR / "main.js").is_file()
+
+
+def test_js_imports_all_resolve():
+    """Every relative import in the graph points at a file that exists."""
+    missing = []
+    for f in _js_files():
+        for spec in _IMPORT_RE.findall(f.read_text(encoding="utf-8")):
+            if not spec.startswith("."):
+                continue  # bare specifier: would need an import map, none used
+            target = (f.parent / spec).resolve()
+            if not target.is_file():
+                missing.append(f"{f.relative_to(JS_DIR)} -> {spec}")
+    assert not missing, f"unresolved imports: {missing}"
+
+
+def test_js_graph_is_fully_reachable_from_entry():
+    """No orphan modules: everything under static/js is reachable from main.js."""
+    seen: set[Path] = set()
+    stack = [(JS_DIR / "main.js").resolve()]
+    while stack:
+        f = stack.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        for spec in _IMPORT_RE.findall(f.read_text(encoding="utf-8")):
+            if spec.startswith("."):
+                stack.append((f.parent / spec).resolve())
+    orphans = {f.resolve() for f in _js_files()} - seen
+    assert not orphans, f"unreachable modules: {sorted(p.name for p in orphans)}"
+
+
+@pytest.mark.asyncio
+async def test_js_module_served_with_module_mime(client):
+    r = await client.get("/js/main.js")
+    assert r.status_code == 200
+    # a module served as text/plain is rejected by the browser outright
+    assert r.headers["content-type"].startswith("text/javascript")
+    assert r.headers["cache-control"] == "no-cache"
+    assert "createRoot" in r.text
+
+
+@pytest.mark.asyncio
+async def test_js_route_rejects_non_modules_and_escapes(client):
+    for bad in ("/js/nope.js", "/js/../index.html", "/js/%2e%2e/index.html",
+                "/js/../../app/main.py"):
+        r = await client.get(bad)
+        assert r.status_code != 200, f"{bad} should not be served"
