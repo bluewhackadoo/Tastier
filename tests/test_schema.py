@@ -1,4 +1,8 @@
-"""Schema + grouping tests against a recorded fixture (no network)."""
+"""Schema + grouping tests against a SYNTHETIC fixture (no network).
+
+The fixture is a textbook iron condor + a share lot on invented tickers; it
+carries no real position data. See CLAUDE.md -> Privacy.
+"""
 
 import json
 from pathlib import Path
@@ -6,7 +10,7 @@ from pathlib import Path
 from app.tasty import group_by_underlying
 
 FIXTURE = json.loads(
-    (Path(__file__).parent / "positions_iron_condor.json").read_text()
+    (Path(__file__).parent / "fixtures" / "positions_iron_condor.json").read_text()
 )
 
 REQUIRED = {"symbol", "underlying", "instrument_type", "qty", "multiplier",
@@ -27,6 +31,6 @@ def test_fixture_schema():
 
 def test_grouping():
     groups = group_by_underlying(FIXTURE)
-    assert set(groups) == {"SPX", "SOXL"}
-    assert len(groups["SPX"]) == 4
-    assert len(groups["SOXL"]) == 1
+    assert set(groups) == {"EPIC", "BOLT"}
+    assert len(groups["EPIC"]) == 4
+    assert len(groups["BOLT"]) == 1

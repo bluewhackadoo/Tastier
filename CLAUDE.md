@@ -95,10 +95,18 @@ expirations) is preserved. Real positions were leaked to a public repo once and
 required a history purge plus deleting a release tag that still pointed at the
 leak commit — check tags, not just branches, if it ever happens again.
 
+**All** fixtures live in `tests/fixtures/` and are synthetic — nothing under
+`tests/` may carry a real ticker. The real capture used to regenerate them
+(`positions_live_snapshot.json`) is gitignored and must stay untracked.
+
 A **pre-commit hook** enforces this (`hooks/pre-commit`); enable it once per
 clone with `git config core.hooksPath hooks`. It blocks staged `.env`/`*.log`/
 `analyses/`, option symbols whose ticker isn't in the synthetic allowlist, and
-your account number (set `TASTIER_ACCT` or `.git/acct-guard`).
+your account number (set `TASTIER_ACCT` or `.git/acct-guard` — **unset means
+that check silently does nothing**, so the hook now warns when it is missing).
+The hook is not sufficient on its own: it only sees *staged* content, so it
+cannot catch anything already in history, and `--no-verify` skips it. `.gitignore`
+carries the same patterns as a second layer.
 
 Also keep out of commits: account numbers, `.env`, `tastier.log`, saved advisor
 runs (`analyses/`), and screenshots of positions. `.claude/` and `logos/` are

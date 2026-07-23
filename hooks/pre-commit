@@ -24,8 +24,8 @@ from pathlib import Path
 
 # tickers that are legitimately synthetic test data
 ALLOWED = {"ACME", "BOLT", "CRUX", "DYNE", "EPIC", "FLUX", "GYRO", "HELM",
-           "IRIS", "JOLT", "KILN", "LUMEN", "MYCO", "ACMEW", "TICKER", "FUT0",
-           "TEST", "XYZ"}
+           "IRIS", "JOLT", "KILN", "LUMEN", "MYCO", "ACMEW", "EPICW", "TICKER",
+           "FUT0", "TEST", "XYZ"}
 
 FORBIDDEN_PATHS = (
     re.compile(r"(^|/)\.env$"),
@@ -33,6 +33,9 @@ FORBIDDEN_PATHS = (
     re.compile(r"(^|/)analyses/"),
     re.compile(r"(^|/)tastier\.log$"),
     re.compile(r"positions_live", re.I),
+    # a CI build log once landed as run_log.txt, which \.log$ does not match
+    re.compile(r"log\.txt$", re.I),
+    re.compile(r"(^|/)(run|build|debug|trace)[-_]?log", re.I),
 )
 
 # e.g. "ACME  260821C00350000" or "./FUT0 LOV6  260917P62"
@@ -61,6 +64,13 @@ def account_number() -> str | None:
 def main() -> int:
     problems: list[str] = []
     acct = account_number()
+    if not acct:
+        # Silent no-op = false confidence. The account-number check only runs
+        # if the guard is configured, so say so rather than appear to pass.
+        sys.stderr.write(
+            "pre-commit: WARNING - no account number configured, so commits are "
+            "NOT checked for it.\n  Fix: echo <acct> > .git/acct-guard  (or set "
+            "TASTIER_ACCT)\n")
 
     for path in staged_files():
         if any(p.search(path) for p in FORBIDDEN_PATHS):

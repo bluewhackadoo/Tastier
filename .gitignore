@@ -8,3 +8,12 @@ dist/
 build/
 *.spec.orig
 tastier.log
+
+# Private data — belt and braces with hooks/pre-commit. The hook only runs if
+# core.hooksPath is set and can be skipped with --no-verify; .gitignore cannot.
+*.log
+*log.txt
+analyses/
+# real position captures used to regenerate synthetic fixtures — never commit
+*live_snapshot*
+tests/fixtures/positions_live_snapshot.json

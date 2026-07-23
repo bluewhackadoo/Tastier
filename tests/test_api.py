@@ -12,7 +12,7 @@ from app.main import app, _legs_cache
 from app.streamer import relay
 
 FIXTURE = json.loads(
-    (Path(__file__).parent / "positions_iron_condor.json").read_text()
+    (Path(__file__).parent / "fixtures" / "positions_iron_condor.json").read_text()
 )
 
 
@@ -35,14 +35,14 @@ async def test_positions_and_analysis(client):
          patch.object(relay, "ensure_running", new=AsyncMock()):
         r = await client.get("/api/positions/TEST123")
         assert r.status_code == 200
-        assert set(r.json()["groups"]) == {"SPX", "SOXL"}
+        assert set(r.json()["groups"]) == {"EPIC", "BOLT"}
 
-        # seed a fake live quote for SPX so analysis has a spot
-        relay.latest["SPX"] = {"symbol": "SPX", "mid": 5975.0}
-        r = await client.get("/api/analysis/TEST123/SPX")
+        # seed a fake live quote for EPIC so analysis has a spot
+        relay.latest["EPIC"] = {"symbol": "EPIC", "mid": 4475.0}
+        r = await client.get("/api/analysis/TEST123/EPIC")
         assert r.status_code == 200
         a = r.json()
-        assert a["spot"] == 5975.0
+        assert a["spot"] == 4475.0
         assert len(a["grid"]) == len(a["expiration_pl"]) == len(a["t0_pl"])
         assert a["max_profit"] > 0 > a["max_loss"]
         assert len(a["breakevens"]) == 2
@@ -52,7 +52,7 @@ async def test_positions_and_analysis(client):
 @pytest.mark.asyncio
 async def test_analysis_without_positions_404(client):
     _legs_cache.clear()
-    r = await client.get("/api/analysis/NOPE/SPX")
+    r = await client.get("/api/analysis/NOPE/EPIC")
     assert r.status_code == 404
 
 
