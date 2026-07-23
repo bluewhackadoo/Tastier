@@ -53,24 +53,49 @@ def staged_blob(path: str) -> str:
     return r.stdout if r.returncode == 0 else ""
 
 
-def account_number() -> str | None:
-    acct = os.environ.get("TASTIER_ACCT")
-    if acct:
-        return acct.strip()
+# Guarded strings are never echoed back in errors: hook output lands in
+# terminal scrollback and CI logs, so naming the match would leak the thing
+# we are protecting.
+MIN_GUARD_LEN = 4
+
+
+def account_numbers() -> list[str]:
+    """Every account number to block.
+
+    Sources are combined, not exclusive: TASTIER_ACCT (comma/space separated)
+    plus .git/acct-guard, one per line with # comments allowed. .git/ is never
+    committed, so the numbers themselves stay out of the repo.
+    """
+    raw: list[str] = re.split(r"[,\s]+", os.environ.get("TASTIER_ACCT", ""))
     f = Path(".git/acct-guard")
-    return f.read_text(encoding="utf-8").strip() if f.exists() else None
+    if f.exists():
+        raw += f.read_text(encoding="utf-8").splitlines()
+
+    out, short = [], []
+    for line in raw:
+        val = line.split("#", 1)[0].strip()
+        if not val:
+            continue
+        # a stray 1-char line would substring-match nearly every file and
+        # block all commits for a reason that is very hard to guess
+        (out if len(val) >= MIN_GUARD_LEN else short).append(val)
+    if short:
+        sys.stderr.write(f"pre-commit: WARNING - ignoring {len(short)} acct-guard "
+                         f"entr{'y' if len(short) == 1 else 'ies'} shorter than "
+                         f"{MIN_GUARD_LEN} chars (too broad to match safely)\n")
+    return sorted(set(out))
 
 
 def main() -> int:
     problems: list[str] = []
-    acct = account_number()
-    if not acct:
+    accts = account_numbers()
+    if not accts:
         # Silent no-op = false confidence. The account-number check only runs
         # if the guard is configured, so say so rather than appear to pass.
         sys.stderr.write(
-            "pre-commit: WARNING - no account number configured, so commits are "
-            "NOT checked for it.\n  Fix: echo <acct> > .git/acct-guard  (or set "
-            "TASTIER_ACCT)\n")
+            "pre-commit: WARNING - no account numbers configured, so commits are "
+            "NOT checked for them.\n  Fix: echo <acct> >> .git/acct-guard  (one "
+            "per line; or set TASTIER_ACCT)\n")
 
     for path in staged_files():
         if any(p.search(path) for p in FORBIDDEN_PATHS):
@@ -81,8 +106,8 @@ def main() -> int:
         content = staged_blob(path)
         if not content:
             continue
-        if acct and acct in content:
-            problems.append(f"{path}: contains the account number")
+        if any(a in content for a in accts):
+            problems.append(f"{path}: contains a guarded account number")
         bad = {m.group(1) for m in OCC.finditer(content)} - ALLOWED
         if bad:
             problems.append(f"{path}: real option symbols for {', '.join(sorted(bad))}"

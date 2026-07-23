@@ -102,8 +102,13 @@ leak commit — check tags, not just branches, if it ever happens again.
 A **pre-commit hook** enforces this (`hooks/pre-commit`); enable it once per
 clone with `git config core.hooksPath hooks`. It blocks staged `.env`/`*.log`/
 `analyses/`, option symbols whose ticker isn't in the synthetic allowlist, and
-your account number (set `TASTIER_ACCT` or `.git/acct-guard` — **unset means
-that check silently does nothing**, so the hook now warns when it is missing).
+your account numbers — **plural**: `.git/acct-guard` takes one per line (`#`
+comments and blank lines ignored) and `TASTIER_ACCT` takes a comma/space
+separated list; the two sources are combined. `.git/` is never committed, so
+the numbers stay out of the repo, but they also don't survive a fresh clone —
+re-add them per machine. **Unset means that check silently does nothing**, so
+the hook warns when it is missing, and ignores entries under 4 chars that
+would match nearly every file.
 The hook is not sufficient on its own: it only sees *staged* content, so it
 cannot catch anything already in history, and `--no-verify` skips it. `.gitignore`
 carries the same patterns as a second layer.
